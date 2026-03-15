@@ -189,6 +189,36 @@ Used by:
 - Best-of-N — [SWE-Agent RetryAgent with reviewer/chooser](../research/concepts/agentic-loop/02-direct-loops.md)
 - [LLM-as-Judge concept](../research/concepts/llm-as-judge/_index.md) — per-action, per-trajectory, per-session, per-variant evaluation
 
+### FocusChain
+
+Tree-structured plan with per-node state.
+The agent maintains and updates this plan via tools.
+Compression, spawning, and domain routing decisions are driven by plan structure.
+
+Required by all five scenarios in [doc 07](07-context-flow.md): context-rich spawning needs the plan to scope the child's task, cloning needs the clone to know its place in the plan, tree compression needs the plan tree to define compression boundaries, strategy selection needs the plan to decide which strategy fits, and domain partitioning tags plan nodes with domains.
+
+Properties:
+- Tree-structured (not flat text) — nodes have children, forming a hierarchy
+- Per-node state: status (pending/active/complete), summary (compressed after completion), domain tag
+- Root node is protected — never compressed (contains goals, business context)
+- Compression hooks: when a node completes, ContextBoundary fires tree compression on that subtask's working context
+- Visible to the LLM: the agent sees the plan tree and can update it via tools
+
+The agent manages FocusChain via tools (same pattern as Letta managing memory via tools):
+- `plan_update(node_id, action: add/complete/reorder)` — modify the plan tree
+- `compress_completed_subtask(node_id)` — trigger tree compression for a completed node
+
+Validated by research:
+- [HiAgent](https://arxiv.org/abs/2408.09559) (ACL 2025) — subgoal-as-compression-boundary, 2x success rate
+- [FoldAgent](https://arxiv.org/abs/2510.11967) — `branch(description, prompt)` + `return(message)` as learned actions, 10x context reduction
+- [ReCAP](https://arxiv.org/abs/2510.23822) (NeurIPS 2025) — recursive context tree, O(d*L) memory bound
+- [PAACE](https://arxiv.org/abs/2512.16970) — formally conditions compression on next k plan steps
+
+Inspired by:
+- [Cline FocusChainManager](../research/concepts/focus-chain/_index.md) — aggressive prompt-pressure, task_progress on every tool call
+- [Goose MOIM](../research/concepts/agentic-loop/02-direct-loops.md) — every-turn injection at fixed position
+- [Codex CLI update_plan tool](../research/concepts/focus-chain/_index.md) — agent calls a tool to update its plan
+
 ### ErrorHandler
 
 Retry with backoff, model fallback chain, compaction-on-overflow, abort.

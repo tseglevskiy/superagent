@@ -139,6 +139,170 @@ Next time someone asks for research, the composition surfaces via semantic retri
 
 ---
 
+## Mutation Operators by Artifact Layer
+
+The [prompt research survey](../research/external/2026-03-15-prompt-research.md) catalogs four families of automated prompt optimization (OPRO, EvoPrompt, TextGrad, DSPy MIPROv2) plus two architecture-level optimization papers (ADAS, MASS).
+These are powerful — prompt-only optimization yields 5-20% improvements (documented across Arize, OpenAI, Warp, Augment).
+
+But prompts alone cannot turn a flat ReAct loop into a research agent.
+What makes PaperQA2 superhuman is not its prompts — it is the RCS compression pipeline (executable Python code), the three-phase architecture (search → gather → answer), and the 5 tool definitions with their specific parameter designs.
+See [Deep Research Architecture](../research/concepts/deep-research/_index.md) — each research agent's defining capability is structural, not textual.
+
+The MASS paper (arXiv:2502.02533) confirms this from the optimization side: when jointly optimizing prompts AND topologies, **"prompts are the dominant factor — top-performing systems emerge from simpler design spaces where prompt quality matters more than complex topology choices."**
+This means: optimize Strategy artifacts (prompts) FIRST because they are high-leverage and cheap to test, but recognize that the architectural ceiling is set by Tool and Composition artifacts.
+
+Each artifact layer requires different mutation operators, different testing strategies, and has a different risk profile.
+
+### Layer 1: Strategy Artifacts — Prompt Optimization
+
+What changes: HOW the LLM reasons within a fixed architecture.
+Tone, specificity, format, emphasis, "fighting the weights" (see [prompt research 2.1](../research/external/2026-03-15-prompt-research.md) — Breunig's framework for systematic prompt comparison).
+
+Mutation operators from the research:
+
+- **OPRO** (arXiv:2309.03409, Google DeepMind) — LLMs as optimizers.
+  A meta-prompt containing previous instruction-score pairs feeds an Optimizer LLM that generates candidate prompts.
+  Discovered prompts like "Take a deep breath and work on this problem step-by-step" that outperformed human designs by up to 8%.
+  This IS our evolution pipeline from [doc 03](03-evolution-and-safety.md): diagnose failures, propose improvements, evaluate.
+  The meta-prompt with previous scores maps directly to the scorecard history from [doc 04](04-measurement.md).
+
+- **EvoPrompt** (arXiv:2309.08532, Microsoft, ICLR 2024) — evolutionary algorithms on prompt populations.
+  Genetic algorithm and differential evolution variants with LLM-performed crossover and mutation.
+  Outperforms human-engineered prompts by up to 25%.
+  Maps to population-based evolution from [doc 03](03-evolution-and-safety.md) — multiple Strategy block versions in the Knowledge Store, scored against the same benchmark, crossover between high-scoring variants.
+
+- **TextGrad** (arXiv:2406.07496, Stanford, published in Nature) — automatic "differentiation" via text.
+  Backpropagates textual feedback through computation graphs.
+  GPT-3.5-turbo went from 78% to 92% on object counting.
+  Provides **gradient-like signals** for the attribution model from [doc 04](04-measurement.md) — instead of just "this version scored higher," TextGrad explains WHY.
+
+- **DSPy MIPROv2** (Stanford) — Bayesian optimization of instructions + few-shot examples.
+  Raised GPT-4o-mini from 24% to 51% on HotPotQA.
+  DSPy compiles typed Signatures into optimized prompts automatically — this is "prompts as code" literally.
+
+- **PromptAgent** (ICLR 2024) — Monte Carlo tree search to explore prompt space.
+  5.6% improvement over ablation baselines.
+  The same MCTS pattern that [Moatless](../research/products/moatless/_index.md) uses for code — but applied to prompts.
+  Could drive principled exploration of Strategy block variants.
+
+Testing for Strategy mutations: [doc 06 Tier 2](06-testing-platform.md) replay tests with scorecard comparison.
+Shadow mode from [doc 05](05-parallel-evaluation.md) is ideal — low risk, fast feedback.
+
+Expected improvement range: 5-20% per mutation cycle.
+Cost: low (LLM calls for optimization, no code execution needed).
+Risk: low (bad prompts produce worse outputs, not crashes).
+
+### Layer 2: Tool Artifacts — Code Mutation
+
+What changes: WHAT the agent can do.
+New capabilities, better implementations, faster algorithms.
+
+Mutation operators from the research:
+
+- **DGM-style coding agent** (arXiv:2505.22954) — an LLM diagnoses failures via analysis, generates improvement proposals phrased as issues, then a coding LLM implements them by editing source code inside Docker containers.
+  Each variant is a chain of patch files.
+  See [DGM product](../research/products/dgm/_index.md).
+
+- **OpenEvolve SEARCH/REPLACE diffs** — the LLM sees the parent code + benchmark scores + error artifacts from prior failures, generates diffs.
+  Cascade evaluation filters cheaply first (syntax → tests → benchmark).
+  Artifact side-channel feeds error output into future mutation prompts.
+  See [OpenEvolve product](../research/products/openevolve/_index.md).
+
+- **Gödel Agent exec + setattr** (ACL 2025) — runtime monkey-patching.
+  The most extreme form: no restarts, no file reload.
+  Not recommended for production, but proves the concept that Tool artifacts can be hot-swapped.
+  See [Gödel Agent product](../research/products/godel-agent/_index.md).
+
+Testing for Tool mutations: [doc 06 Tier 1](06-testing-platform.md) contract tests (does the new version still satisfy the interface?), then Tier 3 E2E smoke with Ollama (does it crash?).
+
+Expected improvement: unbounded — a new tool can unlock entirely new capabilities.
+Cost: moderate (Docker execution for safe evaluation, Ollama for E2E).
+Risk: moderate (bad code can crash, but sandboxed execution + contract tests catch this).
+
+### Layer 3: Composition Artifacts — Architecture Mutation
+
+What changes: HOW blocks are organized.
+Flat loop vs. supervisor-subagent vs. MCTS tree vs. pipeline.
+
+Mutation operators from the research:
+
+- **ADAS** (arXiv:2408.08435, ICLR 2025) — Automated Design of Agentic Systems.
+  A meta-agent **automatically discovers new agent designs by programming them in code**.
+  The Meta Agent Search algorithm iteratively programs new agents based on an ever-growing archive of discoveries.
+  Discovered agents outperform hand-designed agents and transfer across domains and models.
+  This IS our architecture — ADAS does for agent designs what our evolution pipeline does for Composition artifacts.
+  The archive of discoveries grows monotonically, exactly like our Knowledge Store with immutable versioned blocks.
+
+- **MASS** (arXiv:2502.02533) — jointly optimizes agent prompts AND interaction topologies through three-stage interleaved optimization.
+  Key finding: prompts dominate, but topology still matters for complex tasks.
+
+- **EvoAgentX** — evolves multi-agent workflow DAG structure.
+  Five optimization algorithms (SEW, TextGrad, MIPRO, AFlow, EvoPrompt) iteratively improve both prompts and graph topology against benchmarks.
+  See [EvoAgentX product](../research/products/evoagentx/_index.md).
+
+- **GCC** (arXiv:2508.00031) — Git-Context-Controller.
+  Structures agent context as a version-controlled system with BRANCH, MERGE, and CONTEXT commands.
+  Starting from 67.2%, the full system achieves 80.2% on SWE benchmarks.
+  BRANCH/MERGE operations provide the biggest gains by enabling isolated exploration — which is exactly what our ContextBoundary(ArchitecturalIsolation) does.
+
+Testing for Composition mutations: ALL tiers from [doc 06](06-testing-platform.md) — Tier 1 contracts, Tier 2 integration replay, Tier 3 full E2E smoke.
+Plus manual review for the first deployment.
+
+Expected improvement: transformational — this is the difference between "an agent with search" and "a research agent."
+Cost: high (full evaluation suite, potentially expensive model calls).
+Risk: high (architectural changes can break everything, need full regression).
+
+### The Priority Order
+
+Optimize in order of cost-effectiveness:
+
+1. **Strategy artifacts first** — cheap, fast, 5-20% gains, low risk.
+   Use OPRO/EvoPrompt with the scorecard as fitness signal.
+   Shadow mode catches regressions safely.
+
+2. **Tool artifacts second** — moderate cost, unbounded upside, sandboxed risk.
+   Use DGM-style diagnosis-then-implement with Docker isolation.
+   Contract tests + E2E smoke catch interface breaks and crashes.
+
+3. **Composition artifacts last** — expensive, transformational, high risk.
+   Use ADAS-style meta-agent search when the agent hits a ceiling that no prompt or tool change can break through.
+   Full regression suite + manual review.
+
+This matches the MASS finding: prompts are the dominant factor for most tasks.
+But for tasks that require fundamentally different architectures (deep research, MCTS code search, evolutionary optimization), Composition mutations are the only path forward.
+
+### The Prompt Ablation Test
+
+The [prompt research 2.2](../research/external/2026-03-15-prompt-research.md) describes a rigorous ablation methodology: segment the prompt into functional blocks, remove one at a time, measure impact.
+This becomes a Tier 2+ test from [doc 06](06-testing-platform.md):
+
+When a Strategy artifact is mutated, run ablation on the new version:
+1. Segment the prompt into functional sections
+2. Remove each section independently
+3. Measure impact via the scorecard
+4. Sections with zero impact are dead weight — remove them
+5. Sections with huge impact are critical — protect them during future mutations
+
+This is automated quality control for prompts, driven by the same measurement infrastructure from [doc 04](04-measurement.md).
+
+### The Breunig 8-Dimension Prompt Scorecard
+
+The [prompt research 2.1](../research/external/2026-03-15-prompt-research.md) provides 8 dimensions for systematic prompt comparison, from Breunig's 2026 study.
+These become additional metrics for Strategy artifacts in our scorecard:
+
+1. **Token budget allocation** — how much of the prompt goes to instructions vs tools vs examples
+2. **Instruction specificity** — generic ("be helpful") vs precise ("truncate output middle, not suffix")
+3. **Model calibration density** — instructions that override model training tendencies
+4. **Positive vs negative instruction ratio** — "do X" vs "don't do Y" vs "NEVER do Z"
+5. **Emphasis mechanisms** — ALL CAPS, CRITICAL, IMPORTANT, repetition, XML tags
+6. **Autonomy spectrum** — how independently the agent may act
+7. **Error handling coverage** — explicit recovery instructions
+8. **Workflow structure** — linear steps vs flexible decision trees vs mode-based
+
+These are measurable programmatically (token counts, instruction classification, emphasis counting) and can be tracked across Strategy artifact versions to see which changes correlate with performance improvements.
+
+---
+
 ## The Knowledge Store
 
 ### Storage: Python Modules on Disk
