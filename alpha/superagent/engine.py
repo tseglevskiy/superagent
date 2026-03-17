@@ -1,0 +1,294 @@
+"""Engine — stateless disk-first agentic loop.
+
+The core principle: NO in-memory state.
+
+Every turn:
+  1. Read session JSONL from disk  (conversation history)
+  2. Read memory block files from disk  (working memory)
+  3. Compile system prompt + history into messages
+  4. Call LLM
+  5. Write assistant response to session JSONL
+  6. If tool calls → execute, write results to JSONL, goto 1
+  7. Display response
+
+Kill the process, restart, everything continues from the JSONL.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+from .bus import EventBus
+from .config import Config
+from .llm import LLMClient, LLMResponse, ToolCall
+from .memory import compile_blocks_xml, ensure_block_files
+from .sandbox import FUNCTION_STUBS
+from .tools import ToolRegistry
+
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Debug output — clean, focused, no logging framework noise
+# ---------------------------------------------------------------------------
+
+_verbose = False
+
+DIM = "\033[2m"
+CYAN = "\033[36m"
+YELLOW = "\033[33m"
+RESET = "\033[0m"
+
+
+def set_verbose(on: bool) -> None:
+    global _verbose
+    _verbose = on
+
+
+def _dbg(prefix: str, text: str) -> None:
+    """Print a debug line if verbose mode is on."""
+    if _verbose:
+        print(f"{DIM}{prefix}{RESET} {text}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Session JSONL — append-only message log
+# ---------------------------------------------------------------------------
+
+
+def append_message(session_file: Path, msg: dict) -> None:
+    """Append a message to the session JSONL.  Creates file if needed."""
+    msg_with_ts = {**msg, "ts": time.time()}
+    with open(session_file, "a") as f:
+        f.write(json.dumps(msg_with_ts, ensure_ascii=False) + "\n")
+
+
+def load_history(session_file: Path) -> list[dict]:
+    """Load all messages from the session JSONL."""
+    if not session_file.exists():
+        return []
+    messages = []
+    for line in session_file.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        msg.pop("ts", None)
+        messages.append(msg)
+    return messages
+
+
+# ---------------------------------------------------------------------------
+# System prompt compilation
+# ---------------------------------------------------------------------------
+
+
+def compile_system_prompt(cfg: Config) -> str:
+    """Build the full system prompt from disk files."""
+    memory_xml = compile_blocks_xml(cfg.memory_dir)
+    domain_section = ""
+    budget_section = (
+        "<budget_info>\n"
+        "  <context_usage>estimating...</context_usage>\n"
+        "  <session_cost>$0.00</session_cost>\n"
+        "</budget_info>"
+    )
+
+    return (
+        f"You are a file workspace assistant. You help the user manage, "
+        f"analyze, and organize files in their workspace at {cfg.workspace}.\n"
+        f"\n"
+        f"You interact with the workspace by writing Python code via the python_exec tool. "
+        f"The code runs in a secure sandbox. You CANNOT use open(), os, pathlib, subprocess. "
+        f"You MUST use the provided workspace functions below.\n"
+        f"\n"
+        f"RULES:\n"
+        f"- Always use print() to show results to the user.\n"
+        f"- State persists between python_exec calls — variables survive.\n"
+        f"- Be concise. Show results, not process.\n"
+        f"\n"
+        f"WORKSPACE FUNCTIONS (use these inside python_exec):\n"
+        f"```python\n"
+        f"{FUNCTION_STUBS}\n"
+        f"```\n"
+        f"\n"
+        f"ALLOWED MODULES: json, csv, re, collections, itertools, math, statistics\n"
+        f"\n"
+        f"EXAMPLES:\n"
+        f"```python\n"
+        f"# List top-level files\n"
+        f"print(list_dir(\".\"))\n"
+        f"```\n"
+        f"```python\n"
+        f"# Read a file\n"
+        f"content = get_file(\"README.md\")\n"
+        f"print(content[:500])\n"
+        f"```\n"
+        f"```python\n"
+        f"# Search for a pattern\n"
+        f"print(search_files(\"TODO\", path=\".\", file_glob=\"*.md\"))\n"
+        f"```\n"
+        f"\n"
+        f"{memory_xml}\n"
+        f"\n"
+        f"{domain_section}"
+        f"{budget_section}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The turn: one full read-call-write cycle
+# ---------------------------------------------------------------------------
+
+
+def run_turn(
+    cfg: Config,
+    client: LLMClient,
+    registry: ToolRegistry,
+    bus: EventBus,
+) -> str | None:
+    """Execute one complete turn.  Returns the assistant's text response,
+    or None if the conversation ended with a tool call (more turns needed).
+    """
+    system_prompt = compile_system_prompt(cfg)
+    history = load_history(cfg.session_file)
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    tool_schemas = registry.openai_schemas()
+
+    # Show the last message going to the LLM
+    if history:
+        last = history[-1]
+        role = last.get("role", "?")
+        content = last.get("content", "")
+        if role == "user":
+            _dbg("-> user:", content[:200])
+        elif role == "tool":
+            _dbg("-> tool result:", content[:200])
+
+    # Call LLM
+    bus.emit("llm_call_start", {"msg_count": len(messages)})
+    try:
+        response = client.call(messages, tools=tool_schemas if tool_schemas else None)
+    except Exception as e:
+        bus.emit("llm_call_error", {"error": str(e)})
+        return f"[LLM error: {e}]"
+
+    _dbg("<- llm:", f"in={response.input_tokens} out={response.output_tokens} stop={response.stop_reason}")
+
+    bus.emit("llm_call_end", {
+        "input_tokens": response.input_tokens,
+        "output_tokens": response.output_tokens,
+        "model": response.model,
+        "has_tool_calls": response.has_tool_calls,
+    })
+
+    if response.has_tool_calls:
+        # Show the LLM's thinking text (if any) before tool calls
+        if response.content:
+            _dbg("<- thinking:", response.content[:300])
+
+        # Write assistant message with tool calls
+        tc_dicts = []
+        for tc in response.tool_calls:
+            tc_dicts.append({
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.name,
+                    "arguments": json.dumps(tc.arguments),
+                },
+            })
+        assistant_msg: dict[str, Any] = {
+            "role": "assistant",
+            "content": response.content,
+            "tool_calls": tc_dicts,
+        }
+        append_message(cfg.session_file, assistant_msg)
+
+        # Execute each tool call
+        for tc in response.tool_calls:
+            # Show function parameters (the code)
+            code = tc.arguments.get("code", "")
+            if code:
+                _dbg("== python_exec:", "")
+                for line in code.splitlines():
+                    _dbg("  |", line)
+
+            bus.emit("tool_call_start", {"name": tc.name, "args": tc.arguments})
+            result = registry.dispatch(
+                tc.name,
+                tc.arguments,
+                {"workspace": str(cfg.workspace), "memory_dir": str(cfg.memory_dir)},
+            )
+
+            # Show function output
+            _dbg("== result:", result[:500])
+
+            bus.emit("tool_call_end", {"name": tc.name, "result_len": len(result)})
+            tool_msg = {
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": result,
+            }
+            append_message(cfg.session_file, tool_msg)
+
+        return None
+    else:
+        assistant_msg = {
+            "role": "assistant",
+            "content": response.content or "",
+        }
+        append_message(cfg.session_file, assistant_msg)
+        return response.content or ""
+
+
+def run_agent_turn(
+    cfg: Config,
+    client: LLMClient,
+    registry: ToolRegistry,
+    bus: EventBus,
+    *,
+    max_tool_rounds: int = 20,
+) -> str:
+    """Run turns until the agent produces a text response."""
+    for i in range(max_tool_rounds):
+        result = run_turn(cfg, client, registry, bus)
+        if result is not None:
+            return result
+    return "[max tool rounds reached]"
+
+
+# ---------------------------------------------------------------------------
+# User message ingestion
+# ---------------------------------------------------------------------------
+
+
+def add_user_message(cfg: Config, text: str) -> None:
+    append_message(cfg.session_file, {"role": "user", "content": text})
+
+
+# ---------------------------------------------------------------------------
+# Session management
+# ---------------------------------------------------------------------------
+
+
+def new_session(cfg: Config) -> None:
+    if cfg.session_file.exists() and cfg.session_file.stat().st_size > 0:
+        ts = time.strftime("%Y%m%dT%H%M%S")
+        archive = cfg.sessions_dir / f"session-{ts}.jsonl"
+        cfg.session_file.rename(archive)
+    cfg.session_file.touch()
+
+
+def session_message_count(cfg: Config) -> int:
+    if not cfg.session_file.exists():
+        return 0
+    return sum(1 for line in cfg.session_file.read_text().splitlines() if line.strip())

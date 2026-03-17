@@ -1,0 +1,13 @@
+name: sandbox
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - openai>=1.40
+      - ollama>=0.4
+      - pyyaml>=6.0
+      - tiktoken>=0.8
+      - smolagents>=1.14
