@@ -207,3 +207,30 @@ Multi-model review or benchmark validation should gate artifact acceptance.
 
 **5. Record-and-replay testing is production-ready.**
 Block's TestProvider, vcr-langchain, AgentRR, and LangChain's trajectory evaluators prove that our Tier 2 (integration replay) is not speculative — it is already used in production at major companies.
+
+**6. Indiscriminate memory reliably degrades performance.**
+Xiong et al. (arXiv:2505.16067): agents strongly mimic retrieved memories when similarity is high, creating error propagation and misaligned experience replay.
+Only strict selective addition with evaluation improved performance.
+A-MAC (arXiv:2603.04549): without hallucination filtering, agents store and retrieve fabricated information, compounding errors.
+SkillsBench: self-generated skills provide zero benefit.
+The admission gate is the PRIMARY quality mechanism — what you choose NOT to remember matters more than how you organize what you do remember.
+See [doc 03 Memory Security](03-evolution-and-safety.md) and [doc 09 Benchmarks](09-benchmarks-and-performance.md).
+
+**7. Memory poisoning is a real production threat.**
+Microsoft documented 31 companies commercially deploying memory poisoning.
+OWASP 2026 lists Memory and Context Poisoning as ASI06.
+MINJA achieves >95% injection via query-only interaction.
+Three baseline protections required: provenance tracking, trust scoring, utility-based temporal decay.
+See [doc 03 Memory Security](03-evolution-and-safety.md).
+
+**8. Performance should be measured as delta, not absolute.**
+Our metric is how much the agent improves over months of operation on the same task types.
+No existing benchmark measures this.
+Eight new benchmarks (MemoryAgentBench, BEAM, AMA-Bench, Mem2ActBench, etc.) expose that strong long-context performance does NOT predict strong agentic interactive performance.
+See [doc 09 Benchmarks](09-benchmarks-and-performance.md).
+
+**9. RL-trained memory management is the new paradigm.**
+Memory-R1 (152 QA pairs), Mem-alpha (generalizes 13x beyond training length), MEM1 (3.5x performance with 3.7x less memory).
+Learned CRUD operations (ADD/UPDATE/DELETE/NOOP) outperform all heuristic approaches.
+None of the 40 studied projects use learned memory policies yet.
+See [persistent memory research](../research/external/2026-03-17-persistent-memory-research-1.md).

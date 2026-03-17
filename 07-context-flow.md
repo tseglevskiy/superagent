@@ -404,6 +404,15 @@ The agent discovers domains through the same clustering mechanism described in [
 
 This is [Factory Signals autonomous facet discovery](../research/concepts/self-improving/03-self-evaluation.md) applied to knowledge organization instead of friction categorization.
 
+### Domains as the Horizontal Dimension of Knowledge
+
+The later analysis in [doc 10 — Continuous Learning](10-continuous-learning.md) reveals that domains are not a separate concept from the knowledge hierarchy — they ARE the horizontal dimension at the lower levels.
+At the bottom of the hierarchy, knowledge is highly specialized per domain.
+As you go up, patterns converge: similar insights from different domains merge into shared cross-domain concepts.
+The DomainProfile is the boundary between the specialized bottom and the shared top.
+
+See [Hierarchical Knowledge Consolidation](10-continuous-learning.md) for the full two-dimensional model with the organizational analogy and the ASCII diagram showing the wide-bottom/narrow-top shape.
+
 ### Per-Domain Evolution
 
 The evolution pipeline from [doc 03](03-evolution-and-safety.md) operates per-domain:

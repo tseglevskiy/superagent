@@ -330,6 +330,52 @@ For architectural changes, maintain an archive of known-good lockfiles:
 
 ---
 
+## Memory Security
+
+### Why Memory Is an Attack Surface
+
+Memory poisoning is no longer theoretical.
+Microsoft discovered 31 companies across 14 industries commercially deploying memory poisoning — hidden instructions in "Summarize with AI" buttons that inject persistent memory commands.
+OWASP 2026 lists Memory and Context Poisoning as risk ASI06 in the Top 10 for Agentic Applications.
+MINJA (arXiv:2503.03704) achieves >95% injection success via query-only interaction — any user of a shared agent can become an attacker.
+See [persistent memory research](../research/external/2026-03-17-persistent-memory-research-1.md) for the full attack landscape.
+
+Any system that stores persistent knowledge — including our Knowledge Store — inherits these risks.
+
+### Three Baseline Protections
+
+**1. Provenance tracking.**
+Every artifact in the Knowledge Store records: who created it (which agent, which subagent), from what source (user input, tool output, web scraping, internal generation), via what process (Learning Loop extraction, GEPA optimization, manual creation), and when.
+Provenance is immutable — it cannot be modified after creation.
+This enables tracing any suspicious artifact back to its origin.
+
+**2. Trust scoring.**
+Artifacts from trusted sources (successful tasks with user acceptance, multi-model-reviewed compositions) get higher trust than artifacts from untrusted sources (web scraping results, user-provided files, third-party tool outputs).
+Trust scores influence:
+- Search ranking — higher-trust artifacts are preferred in retrieval
+- Admission gates — untrusted artifacts require more gates before activation
+- Error attribution — when a task fails, low-trust artifacts are suspected first
+
+**3. Utility-based lifecycle with temporal decay.**
+Every artifact gets a utility score updated on every access (from AMV-L, arXiv:2603.04443).
+Artifacts that have not been used or validated decay in utility over time.
+GitHub Copilot's 28-day auto-expiry is a simple version of this.
+Our version is richer: since artifacts are Python modules, we profile their actual invocation frequency.
+Declining-utility artifacts are flagged for review; zero-utility artifacts are candidates for retirement; negative-utility artifacts (correlated with task failures) are flagged for removal.
+
+### The Admission Gate as Primary Quality Mechanism
+
+The most important empirical finding from the persistent memory research: **indiscriminate memory reliably degrades performance** (Xiong et al., arXiv:2505.16067).
+Agents strongly mimic retrieved memories when similarity is high, creating error propagation and misaligned experience replay.
+Only strict selective addition with evaluation improved performance.
+
+This means our five admission gates from above are not just safety features — they are the PRIMARY quality mechanism.
+What you choose NOT to remember matters more than how you organize what you do remember.
+A-MAC (arXiv:2603.04549) adds anti-hallucination gating: without filtering, agents store and retrieve fabricated information, compounding errors.
+
+The Learning Loop from [doc 02](02-knowledge-as-code.md) must include quality validation at every extraction step, not just at the artifact-publishing boundary.
+Nemori's Predict-Calibrate pattern (extract only genuinely new knowledge by comparing against predictions from existing knowledge) is the recommended quality gate — it naturally filters redundant and low-signal information.
+
 ## Protected Core
 
 ### What Cannot Be Self-Modified
