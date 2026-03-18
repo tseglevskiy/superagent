@@ -8,7 +8,7 @@ Functions available inside the sandbox:
   get_file(path)                          — read a file
   get_lines(path, start, end)             — read specific lines
   list_dir(path, pattern, recursive)      — list directory
-  search_files(pattern, path, file_glob)  — regex search in files
+  search_files(...)                       — ripgrep-powered regex search
   now()                                   — current datetime string
 """
 
@@ -18,7 +18,8 @@ import datetime
 import fnmatch
 import logging
 import os
-import re
+import shutil
+import subprocess
 from pathlib import Path
 
 from smolagents.local_python_executor import LocalPythonExecutor
@@ -144,13 +145,34 @@ def _make_list_dir(workspace: Path):
 
 
 def _make_search_files(workspace: Path):
-    def search_files(pattern: str, path: str = ".", file_glob: str = "*", max_results: int = 50) -> str:
-        """Search for regex pattern in files. Returns file:line:content.
+    rg_bin = shutil.which("rg")
+    if not rg_bin:
+        raise RuntimeError("ripgrep (rg) is required but not found on PATH")
+
+    def search_files(
+        pattern: str,
+        path: str = ".",
+        file_glob: str = "*",
+        fixed_strings: bool = False,
+        case_sensitive: bool = False,
+        word_boundary: bool = False,
+        context_lines: int = 0,
+        max_results: int = 50,
+    ) -> str:
+        """Search files using ripgrep. Returns file:line:content matches.
+
+        Powered by ripgrep — supports full Rust regex syntax, smart-case,
+        word boundaries, context lines, and glob-based file filtering.
 
         Args:
-            pattern: Regex pattern to search for.
+            pattern: Search pattern. Rust regex by default, or literal if fixed_strings=True.
             path: Directory to search, relative to workspace. Default '.'.
-            file_glob: Glob to filter filenames. Default '*'.
+            file_glob: Glob to filter filenames, e.g. '*.py', '*.md'. Default '*'.
+            fixed_strings: If True, treat pattern as literal text, not regex. Default False.
+            case_sensitive: If True, force case-sensitive. Default False (smart-case:
+                            case-insensitive unless pattern has uppercase).
+            word_boundary: If True, match whole words only. Default False.
+            context_lines: Number of context lines before and after each match. Default 0.
             max_results: Maximum matches to return. Default 50.
         """
         try:
@@ -159,31 +181,73 @@ def _make_search_files(workspace: Path):
             return f"Error: {e}"
         if not resolved.is_dir():
             return f"Error: not a directory: {path}"
+
+        args = [
+            rg_bin,
+            "--no-heading",
+            "--line-number",
+            "--color", "never",
+            "--field-context-separator", ":",  # unify match/context separators
+            "--glob", "!.git",        # always exclude .git
+            "--glob", "!.*",          # skip other hidden dirs/files
+            "--glob", file_glob,
+        ]
+        if fixed_strings:
+            args.append("--fixed-strings")
+        if case_sensitive:
+            args.append("--case-sensitive")
+        else:
+            args.append("--smart-case")
+        if word_boundary:
+            args.append("--word-regexp")
+        if context_lines > 0:
+            args.extend(["--context", str(min(context_lines, 5))])
+        args.extend(["-e", pattern, str(resolved)])
+
         try:
-            regex = re.compile(pattern)
-        except re.error as e:
-            return f"Error: invalid regex: {e}"
+            proc = subprocess.run(
+                args, capture_output=True, text=True, timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            return "Error: search timed out after 15s - use a more specific pattern"
+        except Exception as e:
+            return f"Error running ripgrep: {e}"
+
+        if proc.returncode == 1:
+            return "(no matches)"
+        if proc.returncode == 2:
+            err = proc.stderr.strip()
+            return f"Error: ripgrep: {err}" if err else "Error: ripgrep failed"
+
+        ws_resolved = workspace.resolve()
         results = []
-        for root, dirs, files in os.walk(str(resolved)):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
-            for fname in files:
-                if not fnmatch.fnmatch(fname, file_glob):
+        for line in proc.stdout.splitlines():
+            # Context group separator from --context
+            if line == "--":
+                results.append("--")
+                continue
+            # Format (unified by --field-context-separator):
+            #   absolute_path:lineno:content
+            try:
+                colon1 = line.index(":")
+                rest = line[colon1 + 1:]
+                colon2 = rest.index(":")
+                lineno = rest[:colon2]
+                if not lineno.isdigit():
                     continue
-                full = Path(root) / fname
-                rel = full.relative_to(workspace.resolve())
-                try:
-                    text = full.read_text(errors="replace")
-                    for i, line in enumerate(text.splitlines(), 1):
-                        if regex.search(line):
-                            results.append(f"{rel}:{i}: {line.rstrip()}")
-                            if len(results) >= max_results:
-                                results.append(f"... (truncated at {max_results})")
-                                return "\n".join(results)
-                except Exception:
-                    continue
+                content = rest[colon2 + 1:]
+                abs_path = line[:colon1]
+                rel = os.path.relpath(abs_path, ws_resolved)
+                results.append(f"{rel}:{lineno}: {content.rstrip()}")
+            except (ValueError, Exception):
+                continue
+            if len(results) >= max_results:
+                results.append(f"... (truncated at {max_results})")
+                break
         if not results:
             return "(no matches)"
         return "\n".join(results)
+
     return search_files
 
 
@@ -222,9 +286,48 @@ def list_dir(path: str = ".", pattern: str = "*", recursive: bool = False) -> st
     """List directory contents.
     Args: path (default '.'), pattern (glob, default '*'), recursive."""
 
-def search_files(pattern: str, path: str = ".", file_glob: str = "*", max_results: int = 50) -> str:
-    """Regex search across files. Returns file:line:content matches.
-    Args: pattern (regex), path, file_glob, max_results (default 50)."""
+def search_files(pattern: str, path: str = ".", file_glob: str = "*",
+                 fixed_strings: bool = False, case_sensitive: bool = False,
+                 word_boundary: bool = False, context_lines: int = 0,
+                 max_results: int = 50) -> str:
+    """Ripgrep-powered search across files. Returns file:line:content matches.
+
+    Always searches recursively into subdirectories. Automatically skips
+    binary files, hidden files/dirs, and .git. Supports Rust regex syntax
+    by default. Smart-case: lowercase patterns are case-insensitive,
+    patterns with any uppercase letter are case-sensitive.
+
+    Args:
+      pattern       - regex pattern (default) or literal text (if fixed_strings=True).
+      path          - directory to search, relative to workspace (default '.').
+      file_glob     - glob to filter filenames (default '*').
+      fixed_strings - treat pattern as literal text, not regex.
+      case_sensitive - force case-sensitive search (overrides smart-case).
+      word_boundary  - match whole words only (e.g. 'log' won't match 'logging').
+      context_lines  - lines of context before/after each match, 0-5.
+      max_results    - max matches to return (default 50).
+
+    Examples:
+      # Find function definitions in Python files
+      search_files(r'def \w+\(', path='src', file_glob='*.py')
+
+      # Literal text search (no regex escaping needed)
+      search_files('config["database"]', fixed_strings=True)
+
+      # Whole-word search to avoid partial matches
+      search_files('error', file_glob='*.log', word_boundary=True)
+
+      # Get surrounding context to understand matches
+      search_files('TODO', file_glob='*.py', context_lines=2)
+
+      # Case-sensitive search for a constant name
+      search_files('MAX_RETRIES', case_sensitive=True)
+
+      # Regex alternation
+      search_files('class (User|Account|Session)', file_glob='*.py')
+
+      # Search only markdown files in a specific directory
+      search_files('agentic loop', path='research/concepts', file_glob='*.md')"""
 
 def now() -> str:
     """Returns current date and time as ISO string."""
