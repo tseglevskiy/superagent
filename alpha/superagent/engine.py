@@ -110,8 +110,10 @@ def compile_system_prompt(cfg: Config) -> str:
         f"You MUST use the provided workspace functions below.\n"
         f"\n"
         f"RULES:\n"
+        f"- Use python_exec for ALL workspace interactions.\n"
         f"- Always use print() to show results to the user.\n"
         f"- State persists between python_exec calls — variables survive.\n"
+        f"- When you discover something important, save it with memory_update.\n"
         f"- Be concise. Show results, not process.\n"
         f"\n"
         f"WORKSPACE FUNCTIONS (use these inside python_exec):\n"
@@ -215,12 +217,16 @@ def run_turn(
 
         # Execute each tool call
         for tc in response.tool_calls:
-            # Show function parameters (the code)
-            code = tc.arguments.get("code", "")
-            if code:
+            # Show tool call details
+            if tc.name == "python_exec":
+                code = tc.arguments.get("code", "")
                 _dbg("== python_exec:", "")
                 for line in code.splitlines():
                     _dbg("  |", line)
+            elif tc.name == "memory_update":
+                _dbg("== memory_update:", f'{tc.arguments.get("label")}.{tc.arguments.get("key")} = {tc.arguments.get("value", "")[:100]}')
+            else:
+                _dbg(f"== {tc.name}:", str(tc.arguments)[:200])
 
             bus.emit("tool_call_start", {"name": tc.name, "args": tc.arguments})
             result = registry.dispatch(

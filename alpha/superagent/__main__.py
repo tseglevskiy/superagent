@@ -133,7 +133,7 @@ def main() -> None:
     # --- init ---
     ensure_block_files(cfg.memory_dir)
     bus = EventBus()
-    registry = build_registry(cfg.workspace)
+    registry = build_registry(cfg.workspace, cfg.memory_dir)
 
 
     # --- LLM client ---

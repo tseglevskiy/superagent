@@ -1,16 +1,9 @@
-"""Tool registry — python_exec via sandboxed AST interpreter.
+"""Tool registry — python_exec, memory_update, knowledge_search.
 
-The agent talks in Python.  File operations are Python functions
-available inside the sandbox (get_file, list_dir, etc.).
-The sandbox blocks os, subprocess, pathlib, open() — the agent
-can only access files through our controlled functions.
-
-Active tool:
-  python_exec  — execute Python in smolagents AST sandbox
-
-Commented out for later:
-  memory_update    — update working memory blocks
-  knowledge_search — search accumulated knowledge
+Active tools:
+  python_exec       — execute Python in smolagents AST sandbox
+  memory_update     — set/delete entries in working memory blocks
+  knowledge_search  — search accumulated knowledge (stub for now)
 """
 
 from __future__ import annotations
@@ -20,11 +13,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .memory import update_entry
 from .sandbox import make_executor, FUNCTION_STUBS
 
 log = logging.getLogger(__name__)
 
-# Handler signature: (args: dict, context: dict) -> str
 Handler = Callable[[dict[str, Any], dict[str, Any]], str]
 
 
@@ -74,7 +67,6 @@ class ToolRegistry:
 # ---------------------------------------------------------------------------
 
 def _make_python_exec_handler(workspace: Path) -> Handler:
-    """Create the python_exec handler with a persistent sandboxed executor."""
     executor = make_executor(workspace)
 
     def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
@@ -96,11 +88,41 @@ def _make_python_exec_handler(workspace: Path) -> Handler:
 
 
 # ---------------------------------------------------------------------------
+# memory_update handler
+# ---------------------------------------------------------------------------
+
+def _make_memory_update_handler(memory_dir: Path) -> Handler:
+    def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
+        label = args.get("label", "")
+        key = args.get("key", "")
+        value = args.get("value", "")
+        if not label:
+            return "Error: label is required"
+        if not key:
+            return "Error: key is required"
+        return update_entry(memory_dir, label, key, value)
+
+    return handler
+
+
+# ---------------------------------------------------------------------------
+# knowledge_search handler (stub)
+# ---------------------------------------------------------------------------
+
+def _make_knowledge_search_handler() -> Handler:
+    def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
+        query = args.get("query", "")
+        return f"(no knowledge yet — knowledge store not initialized)"
+
+    return handler
+
+
+# ---------------------------------------------------------------------------
 # Build registry
 # ---------------------------------------------------------------------------
 
-def build_registry(workspace: Path) -> ToolRegistry:
-    """Create a registry with active tools."""
+def build_registry(workspace: Path, memory_dir: Path) -> ToolRegistry:
+    """Create a registry with all active tools."""
     reg = ToolRegistry()
 
     reg.register(Tool(
@@ -110,7 +132,7 @@ def build_registry(workspace: Path) -> ToolRegistry:
             "Use print() to produce output. "
             "Available workspace functions: get_file, get_lines, list_dir, search_files, now. "
             "Standard modules: json, csv, re, collections, itertools, math, statistics. "
-            "State persists between calls — variables from one call are available in the next."
+            "State persists between calls."
         ),
         schema={
             "type": "object",
@@ -125,20 +147,51 @@ def build_registry(workspace: Path) -> ToolRegistry:
         handler=_make_python_exec_handler(workspace),
     ))
 
-    # --- future tools (not sent to model until implemented) ---
-    #
-    # reg.register(Tool(
-    #     name="memory_update",
-    #     description="Update a working memory block.",
-    #     schema={...},
-    #     handler=_make_memory_update_handler(memory_dir),
-    # ))
-    #
-    # reg.register(Tool(
-    #     name="knowledge_search",
-    #     description="Search accumulated knowledge.",
-    #     schema={...},
-    #     handler=_make_knowledge_search_handler(knowledge_dir),
-    # ))
+    reg.register(Tool(
+        name="memory_update",
+        description=(
+            "Set or delete an entry in a working memory block. "
+            "Blocks are shown in <memory_blocks> in the system prompt. "
+            "Use to record workspace discoveries and user preferences. "
+            "Send empty value to delete a key."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Block name: workspace_info, user_preferences, or persona",
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Entry key name (e.g. 'structure', 'preferred_format')",
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Entry value. Empty string = delete the key.",
+                },
+            },
+            "required": ["label", "key", "value"],
+        },
+        handler=_make_memory_update_handler(memory_dir),
+    ))
+
+    reg.register(Tool(
+        name="knowledge_search",
+        description=(
+            "Search accumulated knowledge from past tasks. "
+            "Returns observations and patterns. "
+            "Use BEFORE starting a task to check for known patterns."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for"},
+                "domain": {"type": "string", "description": "Optional domain filter"},
+            },
+            "required": ["query"],
+        },
+        handler=_make_knowledge_search_handler(),
+    ))
 
     return reg

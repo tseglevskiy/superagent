@@ -1,9 +1,8 @@
-"""Working memory — Letta-style labeled text blocks stored as files on disk.
+"""Working memory — key-value blocks stored as YAML files on disk.
 
-Each block is a plain text file under ~/.superagent-sandbox/memory/.
-The engine reads them before every LLM call and compiles them into XML
-in the system prompt.  When the agent calls memory_update, the handler
-writes the new value to disk — the next call picks it up automatically.
+Each block is a YAML file under sandbox/memory/.
+Keys are named entries the agent can set, update, or delete individually.
+The engine reads them before every LLM call and compiles them into XML.
 
 No in-memory state.  Kill the process, restart, blocks are on disk.
 """
@@ -13,6 +12,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
 
 log = logging.getLogger(__name__)
 
@@ -32,59 +33,49 @@ class BlockDef:
     read_only: bool = False
 
 
-# The four standard blocks from prompts/06-system-prompt.md
 STANDARD_BLOCKS: list[BlockDef] = [
     BlockDef(
         label="persona",
-        filename="persona.md",
+        filename="persona.yaml",
         description="Your identity and behavioral guidelines.",
         char_limit=5_000,
     ),
     BlockDef(
         label="workspace_info",
-        filename="workspace_info.md",
+        filename="workspace_info.yaml",
         description=(
-            "What you know about this workspace's structure and contents. "
-            "Update as you learn more."
+            "What you know about this workspace. "
+            "Update keys as you learn more."
         ),
         char_limit=10_000,
     ),
     BlockDef(
         label="user_preferences",
-        filename="user_preferences.md",
+        filename="user_preferences.yaml",
         description=(
-            "The user's working style, preferences, and habits. "
-            "Update when you notice patterns."
+            "The user's working style, preferences, and habits."
         ),
         char_limit=5_000,
     ),
     BlockDef(
         label="current_domain",
-        filename="current_domain.md",
-        description=(
-            "The current task domain, if detected. Loaded automatically."
-        ),
+        filename="current_domain.yaml",
+        description="The current task domain, if detected.",
         char_limit=2_000,
         read_only=True,
     ),
 ]
 
-
-# ---------------------------------------------------------------------------
-# Default content for brand-new blocks
-# ---------------------------------------------------------------------------
-
-DEFAULT_CONTENT: dict[str, str] = {
-    "persona": (
-        "I am a file workspace assistant. "
-        "I learn from experience — the more I work with this workspace, "
-        "the better I understand its structure and the user's preferences. "
-        "I check my accumulated knowledge before starting tasks "
-        "and update my memory when I discover something important."
-    ),
-    "workspace_info": "(No information yet — explore the workspace to learn its structure.)",
-    "user_preferences": "(No preferences observed yet.)",
-    "current_domain": "(No domain detected.)",
+DEFAULT_ENTRIES: dict[str, dict[str, str]] = {
+    "persona": {
+        "identity": (
+            "I am a file workspace assistant. "
+            "I learn from experience and update my memory when I discover something important."
+        ),
+    },
+    "workspace_info": {},
+    "user_preferences": {},
+    "current_domain": {},
 }
 
 
@@ -96,36 +87,75 @@ DEFAULT_CONTENT: dict[str, str] = {
 def ensure_block_files(memory_dir: Path) -> None:
     """Create default block files if they do not exist."""
     memory_dir.mkdir(parents=True, exist_ok=True)
+    # Clean up old .md files from Day 1
+    for bdef in STANDARD_BLOCKS:
+        old_md = memory_dir / bdef.filename.replace(".yaml", ".md")
+        if old_md.exists():
+            old_md.unlink()
     for bdef in STANDARD_BLOCKS:
         path = memory_dir / bdef.filename
         if not path.exists():
-            path.write_text(DEFAULT_CONTENT.get(bdef.label, ""))
+            entries = DEFAULT_ENTRIES.get(bdef.label, {})
+            path.write_text(yaml.dump(entries, default_flow_style=False, allow_unicode=True))
             log.info("created default block %s", path)
 
 
-def read_block(memory_dir: Path, bdef: BlockDef) -> str:
-    """Read block content from disk.  Returns default if file missing."""
+def read_block(memory_dir: Path, bdef: BlockDef) -> dict[str, str]:
+    """Read block entries from disk.  Returns dict of key→value."""
     path = memory_dir / bdef.filename
-    if path.exists():
-        return path.read_text()
-    return DEFAULT_CONTENT.get(bdef.label, "")
+    if not path.exists():
+        return DEFAULT_ENTRIES.get(bdef.label, {})
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+        return {str(k): str(v) for k, v in data.items()}
+    except Exception:
+        log.warning("failed to parse %s, returning empty", path)
+        return {}
 
 
-def write_block(memory_dir: Path, bdef: BlockDef, content: str) -> None:
-    """Write block content to disk."""
+def write_block(memory_dir: Path, bdef: BlockDef, entries: dict[str, str]) -> None:
+    """Write block entries to disk."""
     if bdef.read_only:
         raise ValueError(f"block '{bdef.label}' is read-only")
-    if len(content) > bdef.char_limit:
+    total = sum(len(v) for v in entries.values())
+    if total > bdef.char_limit:
         raise ValueError(
-            f"block '{bdef.label}': {len(content)} chars exceeds limit {bdef.char_limit}"
+            f"block '{bdef.label}': {total} chars exceeds limit {bdef.char_limit}"
         )
     path = memory_dir / bdef.filename
-    path.write_text(content)
-    log.debug("wrote block %s (%d chars)", bdef.label, len(content))
+    path.write_text(yaml.dump(entries, default_flow_style=False, allow_unicode=True))
+
+
+def update_entry(memory_dir: Path, label: str, key: str, value: str) -> str:
+    """Set or delete a single entry in a block.  Empty value = delete.
+
+    Returns a status message.
+    """
+    bdef = find_block_def(label)
+    if bdef is None:
+        return f"Error: unknown block '{label}'"
+    if bdef.read_only:
+        return f"Error: block '{label}' is read-only"
+    entries = read_block(memory_dir, bdef)
+    if not value.strip():
+        # Delete
+        if key in entries:
+            del entries[key]
+            action = f"deleted key '{key}'"
+        else:
+            return f"Error: key '{key}' not found in '{label}'"
+    else:
+        action = f"updated key '{key}'" if key in entries else f"added key '{key}'"
+        entries[key] = value
+    # Check capacity
+    total = sum(len(v) for v in entries.values())
+    if total > bdef.char_limit:
+        return f"Error: would exceed capacity ({total}/{bdef.char_limit} chars)"
+    write_block(memory_dir, bdef, entries)
+    return f"OK: {action} in '{label}' ({total}/{bdef.char_limit} chars used)"
 
 
 def find_block_def(label: str) -> BlockDef | None:
-    """Find a BlockDef by label."""
     for bdef in STANDARD_BLOCKS:
         if bdef.label == label:
             return bdef
@@ -138,16 +168,20 @@ def find_block_def(label: str) -> BlockDef | None:
 
 
 def compile_blocks_xml(memory_dir: Path) -> str:
-    """Read all blocks from disk and render as XML with metadata."""
+    """Read all blocks from disk and render as XML with key-value entries."""
     parts = ["<memory_blocks>"]
     for bdef in STANDARD_BLOCKS:
-        value = read_block(memory_dir, bdef)
-        chars = len(value)
+        entries = read_block(memory_dir, bdef)
+        total_chars = sum(len(v) for v in entries.values())
         ro = ' read_only="true"' if bdef.read_only else ""
         parts.append(f"<{bdef.label}>")
         parts.append(f"  <description>{bdef.description}</description>")
-        parts.append(f"  <metadata>chars={chars}/{bdef.char_limit}{ro}</metadata>")
-        parts.append(f"  <value>{value}</value>")
+        parts.append(f"  <metadata>entries={len(entries)} chars={total_chars}/{bdef.char_limit}{ro}</metadata>")
+        if entries:
+            for k, v in entries.items():
+                parts.append(f'  <entry key="{k}">{v}</entry>')
+        else:
+            parts.append("  (empty)")
         parts.append(f"</{bdef.label}>")
     parts.append("</memory_blocks>")
     return "\n".join(parts)
