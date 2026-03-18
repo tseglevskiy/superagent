@@ -273,7 +273,7 @@ def _fmt_size(n: int) -> str:
 
 
 # The function stubs shown to the LLM in the system prompt
-FUNCTION_STUBS = '''
+FUNCTION_STUBS = r'''
 def get_file(path: str) -> str:
     """Read a file from the workspace. Returns content as string.
     Args: path - relative to workspace root."""

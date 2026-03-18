@@ -23,6 +23,8 @@ from pathlib import Path
 from .bus import EventBus
 from .config import load_config
 from .engine import add_user_message, new_session, run_agent_turn, session_message_count, set_verbose
+from .extraction import maybe_run_extraction
+from .knowledge import KnowledgeStore
 from .llm import make_client
 from .memory import ensure_block_files
 from .tools import build_registry
@@ -133,8 +135,8 @@ def main() -> None:
     # --- init ---
     ensure_block_files(cfg.memory_dir)
     bus = EventBus()
-    registry = build_registry(cfg.workspace, cfg.memory_dir)
-
+    store = KnowledgeStore(cfg.knowledge_dir)
+    registry = build_registry(cfg.workspace, cfg.memory_dir, cfg.knowledge_dir)
 
     # --- LLM client ---
     try:
@@ -181,6 +183,12 @@ def main() -> None:
         print()
         print(response)
         print()
+
+        # Check if extraction is due (foreground, visible)
+        try:
+            maybe_run_extraction(cfg, client, store)
+        except Exception as e:
+            print(f"\033[31m[extraction error: {e}]\033[0m")
 
 
 if __name__ == "__main__":

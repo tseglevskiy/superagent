@@ -21,8 +21,14 @@ DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "sandbox"
 DEFAULT_OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_CHAT_MODEL = "anthropic/claude-3.5-haiku"
 DEFAULT_FAST_MODEL = "openai/gpt-4.1-nano"
+DEFAULT_CONSOLIDATION_MODEL = "anthropic/claude-opus-4.6"
 DEFAULT_OLLAMA_BASE = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3:14b"
+
+# How many user messages trigger extraction (episode segmentation + predict-calibrate)
+EXTRACTION_EVERY_N_MESSAGES = 10
+# How many observations per domain before consolidation into patterns
+CONSOLIDATION_OBSERVATION_CAP = 20
 
 
 @dataclass
@@ -34,6 +40,7 @@ class LLMConfig:
     base_url: str = DEFAULT_OPENROUTER_BASE
     chat_model: str = DEFAULT_CHAT_MODEL
     fast_model: str = DEFAULT_FAST_MODEL
+    consolidation_model: str = DEFAULT_CONSOLIDATION_MODEL
     # ollama-specific
     ollama_base: str = DEFAULT_OLLAMA_BASE
     ollama_model: str = DEFAULT_OLLAMA_MODEL

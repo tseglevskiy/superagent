@@ -1,9 +1,12 @@
-"""Tool registry — python_exec, memory_update, knowledge_search.
+"""Tool registry — python_exec, memory_update, retire_observation.
 
 Active tools:
-  python_exec       — execute Python in smolagents AST sandbox
-  memory_update     — set/delete entries in working memory blocks
-  knowledge_search  — search accumulated knowledge (stub for now)
+  python_exec          — execute Python in smolagents AST sandbox
+  memory_update        — set/delete entries in working memory blocks
+  retire_observation   — mark an observation as outdated
+
+Removed:
+  knowledge_search     — observations are always in context now, no search needed
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .knowledge import KnowledgeStore
 from .memory import update_entry
 from .sandbox import make_executor, FUNCTION_STUBS
 
@@ -66,8 +70,12 @@ class ToolRegistry:
 # python_exec handler
 # ---------------------------------------------------------------------------
 
-def _make_python_exec_handler(workspace: Path) -> Handler:
+def _make_python_exec_handler(workspace: Path, store: KnowledgeStore) -> Handler:
+    """Create python_exec handler. Loads observation functions into the sandbox."""
     executor = make_executor(workspace)
+
+    # Load observation symbols (vars + functions) into sandbox
+    _load_observation_symbols(executor, store)
 
     def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
         code = args.get("code", "")
@@ -87,6 +95,56 @@ def _make_python_exec_handler(workspace: Path) -> Handler:
     return handler
 
 
+def _load_observation_symbols(executor, store: KnowledgeStore) -> None:
+    """Load all active observation symbols (vars + functions) into the sandbox.
+
+    Execs the whole observation body in an isolated namespace, then exports
+    each symbol with an ID suffix. Internal references work because they
+    share the same exec namespace.
+    """
+    observations = store.load_all_active()
+    loaded = 0
+    for obs in observations:
+        if not obs.content.strip():
+            continue
+        # Exec the whole body — internal references between vars and functions work
+        ns: dict = {}
+        try:
+            exec(obs.content, ns)
+        except Exception as e:
+            log.warning("failed to exec observation %s: %s", obs.id, e)
+            continue
+
+        # Export each public symbol with ID suffix
+        for name, value in ns.items():
+            if name.startswith("_") or name in ("__builtins__",):
+                continue
+            suffixed = f"{name}_{obs.short_id}"
+            if callable(value):
+                # Wrap callable with metrics
+                def _make_wrapper(fn, oid, sname):
+                    def wrapper(*args, **kwargs):
+                        try:
+                            result = fn(*args, **kwargs)
+                            store.record_call(oid, success=True)
+                            return result
+                        except Exception as e:
+                            store.record_call(oid, success=False)
+                            raise
+                    wrapper.__name__ = sname
+                    wrapper.__doc__ = getattr(fn, "__doc__", None)
+                    return wrapper
+                executor.additional_functions[suffixed] = _make_wrapper(value, obs.id, suffixed)
+            else:
+                # Non-callable (data structure) — inject directly
+                executor.additional_functions[suffixed] = value
+            loaded += 1
+
+    if loaded:
+        executor.send_tools({})
+        log.info("loaded %d observation symbols into sandbox", loaded)
+
+
 # ---------------------------------------------------------------------------
 # memory_update handler
 # ---------------------------------------------------------------------------
@@ -101,19 +159,19 @@ def _make_memory_update_handler(memory_dir: Path) -> Handler:
         if not key:
             return "Error: key is required"
         return update_entry(memory_dir, label, key, value)
-
     return handler
 
 
 # ---------------------------------------------------------------------------
-# knowledge_search handler (stub)
+# retire_observation handler
 # ---------------------------------------------------------------------------
 
-def _make_knowledge_search_handler() -> Handler:
+def _make_retire_observation_handler(store: KnowledgeStore) -> Handler:
     def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
-        query = args.get("query", "")
-        return f"(no knowledge yet — knowledge store not initialized)"
-
+        obs_id = args.get("observation_id", "")
+        if not obs_id:
+            return "Error: observation_id is required"
+        return store.retire(obs_id)
     return handler
 
 
@@ -121,8 +179,8 @@ def _make_knowledge_search_handler() -> Handler:
 # Build registry
 # ---------------------------------------------------------------------------
 
-def build_registry(workspace: Path, memory_dir: Path) -> ToolRegistry:
-    """Create a registry with all active tools."""
+def build_registry(workspace: Path, memory_dir: Path, knowledge_dir: Path) -> ToolRegistry:
+    store = KnowledgeStore(knowledge_dir)
     reg = ToolRegistry()
 
     reg.register(Tool(
@@ -131,6 +189,7 @@ def build_registry(workspace: Path, memory_dir: Path) -> ToolRegistry:
             "Execute Python code in a sandboxed environment. "
             "Use print() to produce output. "
             "Available workspace functions: get_file, get_lines, list_dir, search_files, now. "
+            "Learned functions from observations are also available (shown in context). "
             "Standard modules: json, csv, re, collections, itertools, math, statistics. "
             "State persists between calls."
         ),
@@ -144,7 +203,7 @@ def build_registry(workspace: Path, memory_dir: Path) -> ToolRegistry:
             },
             "required": ["code"],
         },
-        handler=_make_python_exec_handler(workspace),
+        handler=_make_python_exec_handler(workspace, store),
     ))
 
     reg.register(Tool(
@@ -164,7 +223,7 @@ def build_registry(workspace: Path, memory_dir: Path) -> ToolRegistry:
                 },
                 "key": {
                     "type": "string",
-                    "description": "Entry key name (e.g. 'structure', 'preferred_format')",
+                    "description": "Entry key name",
                 },
                 "value": {
                     "type": "string",
@@ -177,21 +236,23 @@ def build_registry(workspace: Path, memory_dir: Path) -> ToolRegistry:
     ))
 
     reg.register(Tool(
-        name="knowledge_search",
+        name="retire_observation",
         description=(
-            "Search accumulated knowledge from past tasks. "
-            "Returns observations and patterns. "
-            "Use BEFORE starting a task to check for known patterns."
+            "Retire an outdated observation. Use when you discover that a previously "
+            "recorded observation is no longer accurate. The observation stays on disk "
+            "but is removed from context and sandbox."
         ),
         schema={
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "What to search for"},
-                "domain": {"type": "string", "description": "Optional domain filter"},
+                "observation_id": {
+                    "type": "string",
+                    "description": "The observation ID from the <observations> section",
+                },
             },
-            "required": ["query"],
+            "required": ["observation_id"],
         },
-        handler=_make_knowledge_search_handler(),
+        handler=_make_retire_observation_handler(store),
     ))
 
     return reg

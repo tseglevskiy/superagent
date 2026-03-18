@@ -26,6 +26,7 @@ from typing import Any
 from .bus import EventBus
 from .config import Config
 from .llm import LLMClient, LLMResponse, ToolCall
+from .knowledge import KnowledgeStore, get_functions
 from .memory import compile_blocks_xml, ensure_block_files
 from .sandbox import FUNCTION_STUBS
 from .tools import ToolRegistry
@@ -90,10 +91,40 @@ def load_history(session_file: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _compile_observations_section(knowledge_dir) -> str:
+    """Load active observations and render as a context section.
+
+    All symbols (variables and functions) are shown with ID suffix
+    so the LLM knows the exact callable/accessible names in the sandbox.
+    """
+    store = KnowledgeStore(knowledge_dir)
+    observations = store.load_all_active()
+    if not observations:
+        return ""
+    parts = ["<observations>"]
+    parts.append("<!-- All names below have an ID suffix. Use the suffixed name in python_exec. -->")
+    parts.append("<!-- If an observation is outdated, call retire_observation with its ID. -->")
+    for obs in observations:
+        sid = obs.short_id
+        parts.append(f'<observation id="{obs.id}" domain="{obs.domain}" created="{obs.created_at}">')
+        # Suffix all top-level names (variables and functions)
+        import re as _re
+        content = obs.content
+        # Suffix function definitions
+        content = _re.sub(r'^(def )(\w+)(\()', lambda m: f"{m.group(1)}{m.group(2)}_{sid}{m.group(3)}", content, flags=_re.MULTILINE)
+        # Suffix top-level variable assignments (name = ...)
+        content = _re.sub(r'^(\w+)( = )', lambda m: f"{m.group(1)}_{sid}{m.group(2)}", content, flags=_re.MULTILINE)
+        parts.append(content.rstrip())
+        parts.append("</observation>")
+    parts.append("</observations>")
+    return "\n".join(parts)
+
+
 def compile_system_prompt(cfg: Config) -> str:
     """Build the full system prompt from disk files."""
     memory_xml = compile_blocks_xml(cfg.memory_dir)
     domain_section = ""
+    observations_section = _compile_observations_section(cfg.knowledge_dir)
     budget_section = (
         "<budget_info>\n"
         "  <context_usage>estimating...</context_usage>\n"
@@ -114,6 +145,8 @@ def compile_system_prompt(cfg: Config) -> str:
         f"- Always use print() to show results to the user.\n"
         f"- State persists between python_exec calls — variables survive.\n"
         f"- When you discover something important, save it with memory_update.\n"
+        f"- If you find that an observation in <observations> is outdated or wrong, "
+        f"call retire_observation immediately with its ID.\n"
         f"- Be concise. Show results, not process.\n"
         f"\n"
         f"WORKSPACE FUNCTIONS (use these inside python_exec):\n"
@@ -139,6 +172,8 @@ def compile_system_prompt(cfg: Config) -> str:
         f"```\n"
         f"\n"
         f"{memory_xml}\n"
+        f"\n"
+        f"{observations_section}\n"
         f"\n"
         f"{domain_section}"
         f"{budget_section}"
@@ -225,6 +260,10 @@ def run_turn(
                     _dbg("  |", line)
             elif tc.name == "memory_update":
                 _dbg("== memory_update:", f'{tc.arguments.get("label")}.{tc.arguments.get("key")} = {tc.arguments.get("value", "")[:100]}')
+            elif tc.name == "knowledge_search":
+                _dbg("== knowledge_search:", f'query="{tc.arguments.get("query")}" domain={tc.arguments.get("domain", "all")}')
+            elif tc.name == "retire_observation":
+                _dbg("== retire_observation:", tc.arguments.get("observation_id", ""))
             else:
                 _dbg(f"== {tc.name}:", str(tc.arguments)[:200])
 
