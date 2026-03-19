@@ -23,6 +23,7 @@ from pathlib import Path
 from .bus import EventBus
 from .config import load_config
 from .engine import add_user_message, new_session, run_agent_turn, session_message_count, set_verbose
+from .consolidation import maybe_run_consolidation
 from .domain import maybe_detect_domain
 from .extraction import maybe_run_extraction
 from .knowledge import KnowledgeStore
@@ -193,9 +194,17 @@ def main() -> None:
 
         # Check if extraction is due (foreground, visible)
         try:
-            maybe_run_extraction(cfg, client, store)
+            extracted = maybe_run_extraction(cfg, client, store)
         except Exception as e:
             print(f"\033[31m[extraction error: {e}]\033[0m")
+            extracted = False
+
+        # Check if consolidation is needed (foreground, after extraction)
+        if extracted:
+            try:
+                maybe_run_consolidation(cfg, client, store)
+            except Exception as e:
+                print(f"\033[31m[consolidation error: {e}]\033[0m")
 
 
 if __name__ == "__main__":
