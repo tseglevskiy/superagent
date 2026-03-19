@@ -1,9 +1,13 @@
-"""Tool registry — python_exec, memory_update, retire_observation.
+"""Tool registry — python_exec, memory_update, retire_observation, moan,
+confirm_knowledge, use_knowledge.
 
 Active tools:
   python_exec          — execute Python in smolagents AST sandbox
   memory_update        — set/delete entries in working memory blocks
   retire_observation   — mark an observation as outdated
+  moan                 — write-only pain report about API/capability issues
+  confirm_knowledge    — signal that an observation was confirmed by current work
+  use_knowledge        — signal that an observation was essential for reasoning
 
 Removed:
   knowledge_search     — observations are always in context now, no search needed
@@ -11,7 +15,9 @@ Removed:
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -204,6 +210,72 @@ def _make_retire_observation_handler(store: KnowledgeStore) -> Handler:
 
 
 # ---------------------------------------------------------------------------
+# moan handler — write-only pain reports for humans
+# ---------------------------------------------------------------------------
+
+def _make_moan_handler(feedback_dir: Path) -> Handler:
+    """Create handler that appends friction/pain reports to a JSONL file.
+
+    Write-only: the agent never reads these back. Humans review them to
+    improve the API, prompts, and capabilities.
+    """
+    feedback_dir.mkdir(parents=True, exist_ok=True)
+    moans_file = feedback_dir / "moans.jsonl"
+
+    def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
+        message = args.get("message", "").strip()
+        if not message:
+            return "Error: message is required"
+        category = args.get("category", "general").strip()
+        entry = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "category": category,
+            "message": message,
+        }
+        with open(moans_file, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        log.info("moan recorded: [%s] %s", category, message[:80])
+        return "OK: pain recorded. Thank you for reporting."
+
+    return handler
+
+
+# ---------------------------------------------------------------------------
+# knowledge signal handlers — confirm_knowledge, use_knowledge
+# ---------------------------------------------------------------------------
+
+def _make_knowledge_signal_handler(knowledge_dir: Path, signal_type: str) -> Handler:
+    """Create handler that records a knowledge signal (confirmed / used).
+
+    Appends to a JSONL file. Humans and the extraction pipeline can use
+    these signals to gauge which observations are valuable.
+    """
+    signals_file = knowledge_dir / "signals.jsonl"
+
+    def handler(args: dict[str, Any], context: dict[str, Any]) -> str:
+        obs_id = args.get("observation_id", "").strip()
+        reason = args.get("reason", "").strip()
+        if not obs_id:
+            return "Error: observation_id is required"
+        if not reason:
+            return "Error: reason is required - explain how the knowledge was " + (
+                "confirmed" if signal_type == "confirmed" else "used"
+            )
+        entry = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "type": signal_type,
+            "observation_id": obs_id,
+            "reason": reason,
+        }
+        with open(signals_file, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        log.info("knowledge %s: %s - %s", signal_type, obs_id, reason[:80])
+        return f"OK: observation {obs_id} marked as {signal_type}."
+
+    return handler
+
+
+# ---------------------------------------------------------------------------
 # Build registry
 # ---------------------------------------------------------------------------
 
@@ -211,6 +283,7 @@ def build_registry(
     integration_functions: dict[str, Any],
     memory_dir: Path,
     knowledge_dir: Path,
+    data_dir: Path,
 ) -> ToolRegistry:
     """Build the tool registry with integration functions injected into the sandbox.
 
@@ -218,6 +291,7 @@ def build_registry(
         integration_functions: merged functions from all integration modules.
         memory_dir: path to memory block files.
         knowledge_dir: path to knowledge store.
+        data_dir: path to the top-level data directory (for feedback files).
     """
     store = KnowledgeStore(knowledge_dir)
     reg = ToolRegistry()
@@ -303,6 +377,88 @@ def build_registry(
             "required": ["observation_id"],
         },
         handler=_make_retire_observation_handler(store),
+    ))
+
+    reg.register(Tool(
+        name="moan",
+        description=(
+            "Report pain: something in the API, tools, or capabilities that made "
+            "your work impossible, extremely hard, or unnecessarily wasteful. "
+            "Write-only — humans review these to improve the system. "
+            "Use freely whenever you hit friction, a missing function, a confusing "
+            "error, an API that worked differently than expected, or had to use "
+            "an ugly workaround."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": (
+                        "What went wrong, what was missing, or what made "
+                        "the task unnecessarily hard. Be specific."
+                    ),
+                },
+                "category": {
+                    "type": "string",
+                    "description": (
+                        "Category of the pain: missing_function, api_surprise, "
+                        "error_message, workaround, prompt_confusion, performance, other"
+                    ),
+                },
+            },
+            "required": ["message"],
+        },
+        handler=_make_moan_handler(data_dir / "feedback"),
+    ))
+
+    reg.register(Tool(
+        name="confirm_knowledge",
+        description=(
+            "Signal that your current work independently confirmed something "
+            "recorded in an observation. Call when you encounter evidence that "
+            "validates a previously extracted pattern, fact, or function."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "observation_id": {
+                    "type": "string",
+                    "description": "The observation ID from the <observations> section",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "How your current work confirmed this knowledge",
+                },
+            },
+            "required": ["observation_id", "reason"],
+        },
+        handler=_make_knowledge_signal_handler(knowledge_dir, "confirmed"),
+    ))
+
+    reg.register(Tool(
+        name="use_knowledge",
+        description=(
+            "Signal that an observation was essential for your reasoning — "
+            "you used it as a basis or material and could not have reached "
+            "your conclusion without it. Call when knowledge from an observation "
+            "directly enabled your work."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "observation_id": {
+                    "type": "string",
+                    "description": "The observation ID from the <observations> section",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "How this knowledge was used and why it was essential",
+                },
+            },
+            "required": ["observation_id", "reason"],
+        },
+        handler=_make_knowledge_signal_handler(knowledge_dir, "used"),
     ))
 
     return reg

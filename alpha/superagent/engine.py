@@ -159,6 +159,17 @@ def compile_system_prompt(cfg: Config) -> str:
         f"call retire_observation immediately with its ID.\n"
         f"- Be concise. Show results, not process.\n"
         f"\n"
+        f"FEEDBACK TOOLS — USE THEM:\n"
+        f"- moan: ALWAYS call this when you hit a capability gap, a missing function, a sandbox\n"
+        f"  restriction that blocks the user's request, a confusing error, or anything that forced\n"
+        f"  you to tell the user 'I can't do this.' Even if you provide a workaround, still moan.\n"
+        f"  Example: user asks you to run git commands but subprocess is blocked — call moan\n"
+        f"  with category='missing_function' BEFORE telling the user you can't do it.\n"
+        f"- confirm_knowledge: call when your current work independently confirms something\n"
+        f"  recorded in an observation from <observations>.\n"
+        f"- use_knowledge: call when an observation was essential for your reasoning —\n"
+        f"  you could not have reached your conclusion without it.\n"
+        f"\n"
         f"FILE LOOKUP:\n"
         f"- If read() raises FileNotFoundError, search the WHOLE workspace with find(\"**/<name>*\")\n"
         f"  before telling the user the file doesn't exist. Files are often in subdirectories.\n"
@@ -317,6 +328,10 @@ def run_turn(
                 _dbg("== knowledge_search:", f'query="{tc.arguments.get("query")}" domain={tc.arguments.get("domain", "all")}')
             elif tc.name == "retire_observation":
                 _dbg("== retire_observation:", tc.arguments.get("observation_id", ""))
+            elif tc.name == "moan":
+                _dbg("== moan:", f'[{tc.arguments.get("category", "general")}] {tc.arguments.get("message", "")[:120]}')
+            elif tc.name in ("confirm_knowledge", "use_knowledge"):
+                _dbg(f"== {tc.name}:", f'{tc.arguments.get("observation_id", "")} - {tc.arguments.get("reason", "")[:100]}')
             else:
                 _dbg(f"== {tc.name}:", str(tc.arguments)[:200])
 

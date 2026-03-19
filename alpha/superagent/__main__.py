@@ -155,7 +155,7 @@ def main() -> None:
     ensure_block_files(cfg.memory_dir)
     bus = EventBus()
     store = KnowledgeStore(cfg.knowledge_dir)
-    registry = build_registry(integration_functions, cfg.memory_dir, cfg.knowledge_dir)
+    registry = build_registry(integration_functions, cfg.memory_dir, cfg.knowledge_dir, cfg.data_dir)
 
     # --- LLM client ---
     try:
