@@ -23,6 +23,7 @@ from pathlib import Path
 from .bus import EventBus
 from .config import load_config
 from .engine import add_user_message, new_session, run_agent_turn, session_message_count, set_verbose
+from .domain import maybe_detect_domain
 from .extraction import maybe_run_extraction
 from .knowledge import KnowledgeStore
 from .llm import make_client
@@ -169,6 +170,12 @@ def main() -> None:
 
         # --- the core loop: write to disk → call LLM → write to disk ---
         add_user_message(cfg, user_input)
+
+        # Detect domain before the turn (updates current_domain memory block)
+        try:
+            maybe_detect_domain(cfg, client, user_input)
+        except Exception:
+            pass  # domain detection failure is not critical
 
         try:
             response = run_agent_turn(cfg, client, registry, bus)
