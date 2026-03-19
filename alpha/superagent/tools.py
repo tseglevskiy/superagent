@@ -70,6 +70,10 @@ class ToolRegistry:
 # python_exec handler
 # ---------------------------------------------------------------------------
 
+# Default print output limit (characters). Can be overridden per-call via max_output parameter.
+DEFAULT_MAX_PRINT_OUTPUT = 10_000
+
+
 def _make_python_exec_handler(
     integration_functions: dict[str, Any],
     store: KnowledgeStore,
@@ -84,10 +88,25 @@ def _make_python_exec_handler(
         code = args.get("code", "")
         if not code.strip():
             return "Error: empty code"
+
+        # Allow per-call override of print output limit
+        max_output = args.get("max_output")
+        if max_output is not None:
+            max_output = min(int(max_output), 200_000)  # hard ceiling
+            original_limit = executor.max_print_outputs_length
+            executor.max_print_outputs_length = max_output
+        else:
+            original_limit = None
+
         try:
             result = executor(code)
         except Exception as e:
             return f"Execution error: {e}"
+        finally:
+            # Always restore default limit
+            if original_limit is not None:
+                executor.max_print_outputs_length = original_limit
+
         parts = []
         if result.logs:
             parts.append(result.logs)
@@ -216,6 +235,14 @@ def build_registry(
                 "code": {
                     "type": "string",
                     "description": "Python code to execute. Use print() for output.",
+                },
+                "max_output": {
+                    "type": "integer",
+                    "description": (
+                        "Override the default 10K character print output limit. "
+                        "Use when you intentionally need to see more output "
+                        "(e.g. printing a large file or dataset). Max 200000."
+                    ),
                 },
             },
             "required": ["code"],

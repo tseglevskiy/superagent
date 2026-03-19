@@ -40,10 +40,13 @@ edit_regex(path_or_file, pattern, replacement)   – Regex find and replace.
 with batch():                            – Wrap multiple edits for atomic all-or-nothing application.
 delete(path)                             – Delete a file from disk.
 find(pattern, path=".", depth=0)         – Find files and dirs by glob. Returns list[str]. Dirs end with '/'.
-  find("*")                              – top-level entries only
-  find("**/_index.md")                   – all index files (discover document structure)
+  find("*")                              – top-level entries only (NO recursion)
+  find("**/_index.md")                   – all index files recursively (** = recurse into subdirs)
   find("**/*.py", depth=2)               – Python files up to 2 levels deep
   find("**/*.md", path="research/concepts") – markdown in a subtree
+  find("**/PROJECT*")                    – find a file anywhere in the workspace
+  IMPORTANT: Without ** prefix, glob only matches the top-level directory.
+    find("PROJECT*") searches ONLY the root — use find("**/PROJECT*") to search everywhere.
   Raises RuntimeError if >100 results (use depth or narrower path to limit).
 
 Guidelines:
