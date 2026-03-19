@@ -21,11 +21,12 @@ import sys
 from pathlib import Path
 
 from .bus import EventBus
-from .config import load_config
-from .engine import add_user_message, new_session, run_agent_turn, session_message_count, set_verbose
+from .config import load_config, DEFAULT_INTEGRATION_DIR
+from .engine import add_user_message, new_session, run_agent_turn, session_message_count, set_verbose, set_integration_prompts
 from .consolidation import maybe_run_consolidation
 from .domain import maybe_detect_domain
 from .extraction import maybe_run_extraction
+from .integrations import discover
 from .knowledge import KnowledgeStore
 from .llm import make_client
 from .memory import ensure_block_files
@@ -94,16 +95,20 @@ def print_banner(cfg) -> None:
     print()
 
 
-def handle_slash_command(cmd: str, cfg, bus: EventBus) -> bool:
+def handle_slash_command(cmd: str, cfg, bus: EventBus, manager=None) -> bool:
     """Handle slash commands.  Returns True if the command was handled."""
     cmd = cmd.strip().lower()
 
     if cmd == "/quit":
+        if manager:
+            manager.reset_all()
         print("bye")
         sys.exit(0)
 
     if cmd == "/new":
         new_session(cfg)
+        if manager:
+            manager.reset_all()
         print("[new session started]")
         return True
 
@@ -134,11 +139,23 @@ def main() -> None:
         else:
             cfg.llm.chat_model = args.model
 
+    # --- discover integrations ---
+    manager = discover(DEFAULT_INTEGRATION_DIR, cfg.workspace)
+    integration_functions = manager.all_functions()
+    integration_prompts = manager.all_system_prompts()
+    set_integration_prompts(integration_prompts)
+
+    if integration_functions:
+        names = ", ".join(sorted(integration_functions.keys()))
+        print(f"  integrations: {len(manager.integrations)} loaded")
+        print(f"  functions: {names}")
+        print()
+
     # --- init ---
     ensure_block_files(cfg.memory_dir)
     bus = EventBus()
     store = KnowledgeStore(cfg.knowledge_dir)
-    registry = build_registry(cfg.workspace, cfg.memory_dir, cfg.knowledge_dir)
+    registry = build_registry(integration_functions, cfg.memory_dir, cfg.knowledge_dir)
 
     # --- LLM client ---
     try:
@@ -164,7 +181,7 @@ def main() -> None:
 
         # slash commands
         if user_input.startswith("/"):
-            if handle_slash_command(user_input, cfg, bus):
+            if handle_slash_command(user_input, cfg, bus, manager):
                 continue
             print(f"[unknown command: {user_input}]")
             continue
@@ -191,6 +208,9 @@ def main() -> None:
         print()
         print(response)
         print()
+
+        # Cleanup integration state between turns (e.g., drop clean file handle buffers)
+        manager.cleanup_all()
 
         # Check if extraction is due (foreground, visible)
         try:

@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from .knowledge import KnowledgeStore
 from .memory import update_entry
-from .sandbox import make_executor, FUNCTION_STUBS
+from .sandbox import make_executor
 
 log = logging.getLogger(__name__)
 
@@ -70,9 +70,12 @@ class ToolRegistry:
 # python_exec handler
 # ---------------------------------------------------------------------------
 
-def _make_python_exec_handler(workspace: Path, store: KnowledgeStore) -> Handler:
-    """Create python_exec handler. Loads observation functions into the sandbox."""
-    executor = make_executor(workspace)
+def _make_python_exec_handler(
+    integration_functions: dict[str, Any],
+    store: KnowledgeStore,
+) -> Handler:
+    """Create python_exec handler with integration functions + observation symbols."""
+    executor = make_executor(integration_functions)
 
     # Load observation symbols (vars + functions) into sandbox
     _load_observation_symbols(executor, store)
@@ -179,16 +182,30 @@ def _make_retire_observation_handler(store: KnowledgeStore) -> Handler:
 # Build registry
 # ---------------------------------------------------------------------------
 
-def build_registry(workspace: Path, memory_dir: Path, knowledge_dir: Path) -> ToolRegistry:
+def build_registry(
+    integration_functions: dict[str, Any],
+    memory_dir: Path,
+    knowledge_dir: Path,
+) -> ToolRegistry:
+    """Build the tool registry with integration functions injected into the sandbox.
+
+    Args:
+        integration_functions: merged functions from all integration modules.
+        memory_dir: path to memory block files.
+        knowledge_dir: path to knowledge store.
+    """
     store = KnowledgeStore(knowledge_dir)
     reg = ToolRegistry()
+
+    # Build function list for tool description
+    func_names = ", ".join(sorted(integration_functions.keys()))
 
     reg.register(Tool(
         name="python_exec",
         description=(
             "Execute Python code in a sandboxed environment. "
             "Use print() to produce output. "
-            "Available workspace functions: get_file, get_lines, list_dir, search_files, now. "
+            f"Available functions: {func_names}. "
             "Learned functions from observations are also available (shown in context). "
             "Standard modules: json, csv, re, collections, itertools, math, statistics. "
             "State persists between calls."
@@ -203,7 +220,7 @@ def build_registry(workspace: Path, memory_dir: Path, knowledge_dir: Path) -> To
             },
             "required": ["code"],
         },
-        handler=_make_python_exec_handler(workspace, store),
+        handler=_make_python_exec_handler(integration_functions, store),
     ))
 
     reg.register(Tool(

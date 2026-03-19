@@ -18,8 +18,9 @@ import yaml
 # ---------------------------------------------------------------------------
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "sandbox"
+DEFAULT_INTEGRATION_DIR = Path(__file__).resolve().parent.parent / "integration"
 DEFAULT_OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-DEFAULT_CHAT_MODEL = "anthropic/claude-3.5-haiku"
+DEFAULT_CHAT_MODEL = "anthropic/claude-opus-4.6"
 DEFAULT_FAST_MODEL = "openai/gpt-4.1-nano"
 DEFAULT_CONSOLIDATION_MODEL = "anthropic/claude-opus-4.6"
 DEFAULT_OLLAMA_BASE = "http://localhost:11434"

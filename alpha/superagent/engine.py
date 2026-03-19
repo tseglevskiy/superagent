@@ -28,7 +28,6 @@ from .config import Config
 from .llm import LLMClient, LLMResponse, ToolCall
 from .knowledge import KnowledgeStore, get_functions
 from .memory import compile_blocks_xml, ensure_block_files
-from .sandbox import FUNCTION_STUBS
 from .tools import ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -120,8 +119,18 @@ def _compile_observations_section(knowledge_dir) -> str:
     return "\n".join(parts)
 
 
+# Module-level storage for integration prompts, set by __main__.py at startup
+_integration_prompts: str = ""
+
+
+def set_integration_prompts(prompts: str) -> None:
+    """Set the integration system prompts. Called once at startup."""
+    global _integration_prompts
+    _integration_prompts = prompts
+
+
 def compile_system_prompt(cfg: Config) -> str:
-    """Build the full system prompt from disk files."""
+    """Build the full system prompt from disk files + integration prompts."""
     memory_xml = compile_blocks_xml(cfg.memory_dir)
     domain_section = ""
     observations_section = _compile_observations_section(cfg.knowledge_dir)
@@ -138,7 +147,7 @@ def compile_system_prompt(cfg: Config) -> str:
         f"\n"
         f"You interact with the workspace by writing Python code via the python_exec tool. "
         f"The code runs in a secure sandbox. You CANNOT use open(), os, pathlib, subprocess. "
-        f"You MUST use the provided workspace functions below.\n"
+        f"You MUST use the provided functions below.\n"
         f"\n"
         f"RULES:\n"
         f"- Use python_exec for ALL workspace interactions.\n"
@@ -149,26 +158,32 @@ def compile_system_prompt(cfg: Config) -> str:
         f"call retire_observation immediately with its ID.\n"
         f"- Be concise. Show results, not process.\n"
         f"\n"
-        f"WORKSPACE FUNCTIONS (use these inside python_exec):\n"
-        f"```python\n"
-        f"{FUNCTION_STUBS}\n"
-        f"```\n"
+        f"{_integration_prompts}\n"
         f"\n"
         f"ALLOWED MODULES: json, csv, re, collections, itertools, math, statistics\n"
         f"\n"
         f"EXAMPLES:\n"
         f"```python\n"
-        f"# List top-level files\n"
-        f"print(list_dir(\".\"))\n"
+        f"# Browse a directory\n"
+        f"print(read(\"research/concepts\"))\n"
+        f"```\n"
+        f"```python\n"
+        f"# Find and iterate over files\n"
+        f"for path in find(\"**/_index.md\"):\n"
+        f"    print(path)\n"
         f"```\n"
         f"```python\n"
         f"# Read a file\n"
-        f"content = get_file(\"README.md\")\n"
-        f"print(content[:500])\n"
+        f"f = read(\"README.md\")\n"
+        f"print(f.content[:500])\n"
         f"```\n"
         f"```python\n"
-        f"# Search for a pattern\n"
-        f"print(search_files(\"TODO\", path=\".\", file_glob=\"*.md\"))\n"
+        f"# Search file contents\n"
+        f"print(ripgrep(\"TODO\", file_glob=\"*.md\"))\n"
+        f"```\n"
+        f"```python\n"
+        f"# Edit a file\n"
+        f"edit(\"src/app.py\", old=\"return hello\", new=\"return world\")\n"
         f"```\n"
         f"\n"
         f"{memory_xml}\n"
