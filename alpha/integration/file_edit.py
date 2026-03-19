@@ -6,13 +6,14 @@ All functions use singleton File handles with write-back buffers and atomic writ
 
 Usage: inject SYSTEM_PROMPT into the agent's system message, then inject all public
 functions (read, edit, write, insert, replace_lines, edit_regex, append, batch, delete,
-exists, find, grep) into the agent's exec() namespace.
+move, copy, exists, find) into the agent's exec() namespace.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -39,6 +40,8 @@ replace_lines(file_or_path, start, end, content) – Replace a range of lines.
 edit_regex(path_or_file, pattern, replacement)   – Regex find and replace.
 with batch():                            – Wrap multiple edits for atomic all-or-nothing application.
 delete(path)                             – Delete a file from disk.
+move(src, dst)                           – Move or rename a file. Raises if dst exists; use overwrite=True.
+copy(src, dst)                           – Copy a file. Raises if dst exists; use overwrite=True.
 find(pattern, path=".", depth=0)         – Find files and dirs by glob. Returns list[str]. Dirs end with '/'.
   find("*")                              – top-level entries only (NO recursion)
   find("**/_index.md")                   – all index files recursively (** = recurse into subdirs)
@@ -1036,21 +1039,135 @@ def batch():
 def delete(path: str) -> None:
     """Delete a file from disk and clear its handle from the registry.
 
+    Cannot be used inside batch() — filesystem deletions are not rollback-safe.
+
     Args:
         path: Relative path to the file.
 
     Raises:
         FileNotFoundError: file does not exist.
+        RuntimeError:      called inside batch().
 
     Example::
 
         delete("src/obsolete.py")
     """
+    if _batch_mode:
+        raise RuntimeError("delete() cannot be used inside batch() - filesystem deletions are not rollback-safe.")
     abs_path = _workspace / path
     if not abs_path.exists():
         raise FileNotFoundError(f"{path} does not exist")
     abs_path.unlink()
     _registry.pop(path, None)
+
+
+def move(src: str, dst: str, *, overwrite: bool = False) -> str:
+    """Move or rename a file within the workspace.
+
+    Flushes any dirty buffer for src before moving. Creates parent
+    directories for dst automatically. Updates the singleton registry
+    (removes old handle; new handle created lazily on next read).
+
+    Cannot be used inside batch() — filesystem moves are not rollback-safe.
+
+    Args:
+        src:       Source path (relative to workspace).
+        dst:       Destination path (relative to workspace).
+        overwrite: If True, overwrite dst if it exists. Default raises.
+
+    Returns:
+        The destination path (same as dst).
+
+    Raises:
+        FileNotFoundError:  src does not exist.
+        FileExistsError:    dst exists and overwrite=False.
+        IsADirectoryError:  src is a directory (only files supported).
+        RuntimeError:       called inside batch().
+
+    Example::
+
+        move("src/old_name.py", "src/new_name.py")
+        move("drafts/readme.md", "docs/README.md", overwrite=True)
+    """
+    if _batch_mode:
+        raise RuntimeError("move() cannot be used inside batch() - filesystem moves are not rollback-safe.")
+    abs_src = _workspace / src
+    abs_dst = _workspace / dst
+
+    if not abs_src.exists():
+        raise FileNotFoundError(f"{src} does not exist")
+    if abs_src.is_dir():
+        raise IsADirectoryError(f"{src} is a directory; move() only supports files")
+    if abs_dst.exists() and not overwrite:
+        raise FileExistsError(f"{dst} already exists. Use overwrite=True to replace.")
+
+    # Flush any dirty buffer before moving on disk
+    handle = _registry.get(src)
+    if handle and handle._dirty:
+        handle._flush()
+
+    abs_dst.parent.mkdir(parents=True, exist_ok=True)
+    abs_src.rename(abs_dst)
+
+    # Clean up registry: drop old handle, drop stale dst handle
+    _registry.pop(src, None)
+    _registry.pop(dst, None)
+
+    return dst
+
+
+def copy(src: str, dst: str, *, overwrite: bool = False) -> str:
+    """Copy a file within the workspace.
+
+    Flushes any dirty buffer for src before copying so the copy
+    reflects the latest edits. Creates parent directories for dst
+    automatically.
+
+    Cannot be used inside batch() — filesystem copies are not rollback-safe.
+
+    Args:
+        src:       Source path (relative to workspace).
+        dst:       Destination path (relative to workspace).
+        overwrite: If True, overwrite dst if it exists. Default raises.
+
+    Returns:
+        The destination path (same as dst).
+
+    Raises:
+        FileNotFoundError:  src does not exist.
+        FileExistsError:    dst exists and overwrite=False.
+        IsADirectoryError:  src is a directory (only files supported).
+        RuntimeError:       called inside batch().
+
+    Example::
+
+        copy("src/template.py", "src/new_module.py")
+        copy("config/base.yaml", "config/production.yaml")
+    """
+    if _batch_mode:
+        raise RuntimeError("copy() cannot be used inside batch() - filesystem copies are not rollback-safe.")
+    abs_src = _workspace / src
+    abs_dst = _workspace / dst
+
+    if not abs_src.exists():
+        raise FileNotFoundError(f"{src} does not exist")
+    if abs_src.is_dir():
+        raise IsADirectoryError(f"{src} is a directory; copy() only supports files")
+    if abs_dst.exists() and not overwrite:
+        raise FileExistsError(f"{dst} already exists. Use overwrite=True to replace.")
+
+    # Flush any dirty buffer so the copy reflects latest edits
+    handle = _registry.get(src)
+    if handle and handle._dirty:
+        handle._flush()
+
+    abs_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(abs_src, abs_dst)
+
+    # Drop stale dst handle if it existed (e.g. overwrite case)
+    _registry.pop(dst, None)
+
+    return dst
 
 
 
@@ -1166,6 +1283,8 @@ def register(workspace: Path) -> dict:
             "append": append,
             "batch": batch,
             "delete": delete,
+            "move": move,
+            "copy": copy,
             "exists": exists,
             "find": find,
         },

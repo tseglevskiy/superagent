@@ -101,6 +101,12 @@ def _make_python_exec_handler(
         try:
             result = executor(code)
         except Exception as e:
+            # Include any print output captured before the error so the LLM
+            # knows what work was already done (e.g. edits flushed to disk)
+            # before the exception fired.
+            prior_output = executor.state.get("print_outputs", "")
+            if prior_output:
+                return f"{prior_output}\nExecution error: {e}"
             return f"Execution error: {e}"
         finally:
             # Always restore default limit
