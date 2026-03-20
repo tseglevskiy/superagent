@@ -101,7 +101,14 @@ def print_banner(cfg) -> None:
     print()
 
 
-def handle_slash_command(cmd: str, cfg, bus: EventBus, manager=None) -> bool:
+def handle_slash_command(
+    cmd: str,
+    cfg,
+    bus: EventBus,
+    manager=None,
+    client: "LLMClient | None" = None,
+    store: "KnowledgeStore | None" = None,
+) -> bool:
     """Handle slash commands.  Returns True if the command was handled."""
     cmd = cmd.strip().lower()
 
@@ -112,6 +119,18 @@ def handle_slash_command(cmd: str, cfg, bus: EventBus, manager=None) -> bool:
         sys.exit(0)
 
     if cmd == "/new":
+        # Extract knowledge from pending messages before archiving
+        if client and store:
+            try:
+                extracted = maybe_run_extraction(cfg, client, store, force=True)
+            except Exception as e:
+                print(f"\033[31m[extraction error: {e}]\033[0m")
+                extracted = False
+            if extracted:
+                try:
+                    maybe_run_consolidation(cfg, client, store)
+                except Exception as e:
+                    print(f"\033[31m[consolidation error: {e}]\033[0m")
         new_session(cfg)
         reset_budget()
         if manager:
@@ -212,7 +231,7 @@ def main() -> None:
 
         # slash commands
         if user_input.startswith("/"):
-            if handle_slash_command(user_input, cfg, bus, manager):
+            if handle_slash_command(user_input, cfg, bus, manager, client=client, store=store):
                 continue
             print(f"[unknown command: {user_input}]")
             continue

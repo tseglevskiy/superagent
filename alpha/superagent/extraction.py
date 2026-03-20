@@ -320,16 +320,23 @@ def maybe_run_extraction(
     cfg: Config,
     client: LLMClient,
     store: KnowledgeStore,
+    *,
+    force: bool = False,
 ) -> bool:
     """Check if extraction is due and run it. Returns True if extraction ran.
 
     Runs in foreground with visible output (D7 decision).
+    When force=True (e.g. on /new), runs even if pending < threshold,
+    but still requires at least 2 pending user messages.
     """
     total_user_msgs = _count_user_messages(cfg)
     pointer = _read_pointer(cfg)
     pending = total_user_msgs - pointer
 
-    if pending < EXTRACTION_EVERY_N_MESSAGES:
+    if force:
+        if pending < 2:
+            return False
+    elif pending < EXTRACTION_EVERY_N_MESSAGES:
         return False
 
     _info(f"starting extraction ({pending} user messages since last)")
