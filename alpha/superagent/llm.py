@@ -111,13 +111,26 @@ class OpenRouterClient:
         if tools:
             kwargs["tools"] = tools
 
-        # Add cache_control to system message for Anthropic prompt caching.
-        # Mark the system prompt as cacheable — it's large and mostly static.
+        # Anthropic prompt caching — 3 breakpoints (of 4 max):
+        #   1. System prompt (static header: rules, knowledge, memory)
+        #   2. Second-to-last message (failover if last call is retried)
+        #   3. Last message (gradual forward movement)
+        _cc = {"type": "ephemeral"}
+
+        def _mark(m: dict) -> None:
+            if isinstance(m.get("content"), str):
+                m["content"] = [{"type": "text", "text": m["content"], "cache_control": _cc}]
+
+        # Breakpoint 1: system prompt
         for m in messages:
-            if m.get("role") == "system" and isinstance(m.get("content"), str):
-                m["content"] = [
-                    {"type": "text", "text": m["content"], "cache_control": {"type": "ephemeral"}}
-                ]
+            if m.get("role") == "system":
+                _mark(m)
+                break
+        # Breakpoints 2+3: last two messages
+        if len(messages) >= 3:
+            _mark(messages[-2])
+        if len(messages) >= 2:
+            _mark(messages[-1])
 
         log.debug("openrouter call  model=%s  msgs=%d", model, len(messages))
         raw = self._client.chat.completions.create(**kwargs)
