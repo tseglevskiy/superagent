@@ -118,8 +118,19 @@ class OpenRouterClient:
         _cc = {"type": "ephemeral"}
 
         def _mark(m: dict) -> None:
-            if isinstance(m.get("content"), str):
-                m["content"] = [{"type": "text", "text": m["content"], "cache_control": _cc}]
+            """Add cache_control to a message. Handles string content and
+            structured content blocks. Skips thinking blocks which don't
+            support cache_control."""
+            content = m.get("content")
+            if isinstance(content, str):
+                m["content"] = [{"type": "text", "text": content, "cache_control": _cc}]
+            elif isinstance(content, list):
+                # Find the last text block (skip thinking blocks)
+                for block in reversed(content):
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        block["cache_control"] = _cc
+                        break
+            # None content (tool_call messages) — skip
 
         # Breakpoint 1: system prompt
         for m in messages:
