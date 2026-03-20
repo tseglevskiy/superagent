@@ -54,6 +54,7 @@ class Config:
     data_dir: Path = field(default_factory=lambda: DEFAULT_DATA_DIR)
     workspace: Path = field(default_factory=lambda: Path.cwd())
     llm: LLMConfig = field(default_factory=LLMConfig)
+    rules_files: list[str] = field(default_factory=list)
 
     # --- derived paths (set in __post_init__) ---
     memory_dir: Path = field(init=False)
@@ -143,10 +144,16 @@ def load_config(
         ollama_model=llm_section.get("ollama_model", DEFAULT_OLLAMA_MODEL),
     )
 
+    # Rules files: list of paths relative to workspace
+    rules_files = file_data.get("rules_files", [])
+    if not isinstance(rules_files, list):
+        rules_files = []
+
     cfg = Config(
         data_dir=resolved_data,
         workspace=workspace or Path.cwd(),
         llm=llm_cfg,
+        rules_files=[str(r) for r in rules_files],
     )
     cfg.ensure_dirs()
     return cfg

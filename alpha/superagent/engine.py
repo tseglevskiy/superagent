@@ -119,6 +119,58 @@ def _compile_observations_section(knowledge_dir) -> str:
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Rules injection — .clinerules-compatible project rules
+# ---------------------------------------------------------------------------
+
+
+def _compile_rules_section(cfg: Config) -> str:
+    """Load rules files listed in config and render as a context section.
+
+    Paths in cfg.rules_files are relative to cfg.workspace.
+    Only files that exist on disk are included.
+    Format mirrors Cline's .clinerules injection for backward compatibility.
+    """
+    if not cfg.rules_files:
+        return ""
+
+    loaded: list[tuple[str, str]] = []
+    for rel_path in cfg.rules_files:
+        abs_path = cfg.workspace / rel_path
+        if abs_path.is_file():
+            try:
+                content = abs_path.read_text(encoding="utf-8").strip()
+                if content:
+                    loaded.append((rel_path, content))
+            except Exception:
+                log.warning("failed to read rules file: %s", abs_path)
+
+    if not loaded:
+        return ""
+
+    parts = ["<user_rules>"]
+    parts.append(
+        "The following additional instructions are provided by the user, "
+        "and should be followed to the best of your ability without "
+        "interfering with the TOOL USE guidelines."
+    )
+    parts.append("")
+    parts.append("# .clinerules/")
+    parts.append("")
+    parts.append(
+        f"The following is provided by a root-level .clinerules/ directory "
+        f"where the user has specified instructions for this working "
+        f"directory ({cfg.workspace})"
+    )
+    parts.append("")
+    for rel_path, content in loaded:
+        parts.append(rel_path)
+        parts.append(content)
+        parts.append("")
+    parts.append("</user_rules>")
+    return "\n".join(parts)
+
+
 # Module-level storage for integration prompts, set by __main__.py at startup
 _integration_prompts: str = ""
 
@@ -134,6 +186,7 @@ def compile_system_prompt(cfg: Config) -> str:
     memory_xml = compile_blocks_xml(cfg.memory_dir)
     domain_section = ""
     observations_section = _compile_observations_section(cfg.knowledge_dir)
+    rules_section = _compile_rules_section(cfg)
 
     budget_section = (
         "<budget_info>\n"
@@ -198,6 +251,8 @@ def compile_system_prompt(cfg: Config) -> str:
         f"- Produce the deliverable. Don't spend all your budget on data collection.\n"
         f"\n"
         f"{_integration_prompts}\n"
+        f"\n"
+        f"{rules_section}\n"
         f"\n"
         f"ALLOWED MODULES: json, csv, re, collections, itertools, math, statistics\n"
         f"\n"

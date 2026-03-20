@@ -89,6 +89,9 @@ def print_banner(cfg) -> None:
     print(f"  workspace: {cfg.workspace}")
     print(f"  provider:  {provider}  model: {model}")
     print(f"  data:      {cfg.data_dir}")
+    if cfg.rules_files:
+        existing = [r for r in cfg.rules_files if (cfg.workspace / r).is_file()]
+        print(f"  rules:     {len(existing)}/{len(cfg.rules_files)} files loaded")
     if msgs > 0:
         print(f"  session:   {msgs} messages (continuing)")
     print(f"  commands:  /new /status /quit")
