@@ -18,6 +18,14 @@ from .config import LLMConfig
 
 log = logging.getLogger(__name__)
 
+# Verbosity level — set by __main__.py at startup
+_verbose: int = 0
+
+
+def set_llm_verbose(level: int) -> None:
+    global _verbose
+    _verbose = level
+
 
 # ---------------------------------------------------------------------------
 # Shared types
@@ -41,6 +49,7 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
+    cached_tokens: int = 0
     model: str = ""
     stop_reason: str = ""
 
@@ -102,10 +111,30 @@ class OpenRouterClient:
         if tools:
             kwargs["tools"] = tools
 
+        # Add cache_control to system message for Anthropic prompt caching.
+        # Mark the system prompt as cacheable — it's large and mostly static.
+        for m in messages:
+            if m.get("role") == "system" and isinstance(m.get("content"), str):
+                m["content"] = [
+                    {"type": "text", "text": m["content"], "cache_control": {"type": "ephemeral"}}
+                ]
+
         log.debug("openrouter call  model=%s  msgs=%d", model, len(messages))
         raw = self._client.chat.completions.create(**kwargs)
         choice = raw.choices[0]
         msg = choice.message
+
+        # Print raw API response at -vvv
+        if _verbose >= 3:
+            import json as _json
+            usage_dict = {}
+            if raw.usage:
+                usage_dict = {"prompt_tokens": raw.usage.prompt_tokens, "completion_tokens": raw.usage.completion_tokens}
+                if hasattr(raw.usage, "prompt_tokens_details") and raw.usage.prompt_tokens_details:
+                    usage_dict["prompt_tokens_details"] = str(raw.usage.prompt_tokens_details)
+                if hasattr(raw.usage, "completion_tokens_details") and raw.usage.completion_tokens_details:
+                    usage_dict["completion_tokens_details"] = str(raw.usage.completion_tokens_details)
+            print(f"\033[2m[api-raw] model={model} finish={choice.finish_reason} usage={_json.dumps(usage_dict)}\033[0m")
 
         # parse tool calls
         tc_list: list[ToolCall] = []
@@ -121,11 +150,15 @@ class OpenRouterClient:
                 )
 
         usage = raw.usage
+        cached = 0
+        if usage and hasattr(usage, "prompt_tokens_details") and usage.prompt_tokens_details:
+            cached = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
         return LLMResponse(
             content=msg.content,
             tool_calls=tc_list,
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
+            cached_tokens=cached,
             model=model,
             stop_reason=choice.finish_reason or "",
         )

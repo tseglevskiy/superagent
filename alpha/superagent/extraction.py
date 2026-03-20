@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .budget import record_and_print
 from .config import Config, EXTRACTION_EVERY_N_MESSAGES
 from .knowledge import KnowledgeStore
 from .llm import LLMClient
@@ -34,7 +35,7 @@ RESET = "\033[0m"
 
 def _info(text: str) -> None:
     """Print extraction progress visibly (always, not just verbose)."""
-    print(f"{MAGENTA}[extraction]{RESET} {text}", file=sys.stderr)
+    print(f"{MAGENTA}[extraction]{RESET} {text}")
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +174,8 @@ def _segment_episodes(messages: list[dict], client: LLMClient, model: str) -> li
         _info(f"segmentation failed: {e}")
         return [{"indices": list(range(1, len(messages) + 1)), "topic": "conversation", "domain_hint": "uncategorized"}]
 
+    record_and_print(response.model, response.input_tokens, response.output_tokens, response.cached_tokens)
+
     # Parse JSON from response
     text = response.content or ""
     try:
@@ -293,6 +296,7 @@ def _extract_from_episode(
         _info(f"extraction failed: {e}")
         return []
 
+    record_and_print(response.model, response.input_tokens, response.output_tokens, response.cached_tokens)
     text = response.content or ""
     try:
         start = text.find("{")

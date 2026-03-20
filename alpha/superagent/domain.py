@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 
 from .atomicfile import atomic_write
+from .budget import record_and_print
 from .config import Config
 from .knowledge import KnowledgeStore, sanitize_name
 from .llm import LLMClient
@@ -30,7 +31,7 @@ RESET = "\033[0m"
 
 
 def _info(text: str) -> None:
-    print(f"{DIM}[domain]{RESET} {text}", file=sys.stderr)
+    print(f"{DIM}[domain]{RESET} {text}")
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +129,7 @@ def detect_domain(
         log.warning("domain detection failed: %s", e)
         return None
 
+    record_and_print(response.model, response.input_tokens, response.output_tokens, response.cached_tokens)
     text = response.content or ""
     try:
         start = text.find("{")

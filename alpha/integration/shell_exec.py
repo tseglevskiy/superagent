@@ -34,6 +34,8 @@ from typing import Any, Sequence
 log = logging.getLogger(__name__)
 
 _workspace: Path = Path.cwd()
+_allowed_read_paths: list[str] = []
+_allowed_write_paths: list[str] = []
 
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
@@ -160,6 +162,17 @@ def _build_policy(
         "; re-allow safe dotfiles (git config, gitignore - not secrets)",
         f'(allow file-read* (regex #"^{home_str}/[.]gitconfig"))',
         f'(allow file-read* (regex #"^{home_str}/[.]gitignore"))',
+    ]
+    # Inject user-configured allowed read paths from config.yaml
+    if _allowed_read_paths:
+        read_section.append("")
+        read_section.append("; user-configured allowed read paths (from config.yaml sandbox.allowed_read_paths)")
+        for i, raw_path in enumerate(_allowed_read_paths):
+            resolved = _canonicalize(Path(raw_path).expanduser())
+            param_name = f"ALLOWED_READ_{i}"
+            read_section.append(f'(allow file-read* (subpath (param "{param_name}")))')
+            params.append(f"-D{param_name}={resolved}")
+    read_section.extend([
         "",
         "; block ~/Library (keychains, cookies, app tokens)",
         '(deny file-read* (subpath (param "DENY_LIBRARY")))',
@@ -168,7 +181,7 @@ def _build_policy(
         '(allow file-read* (subpath (param "ALLOW_LIBRARY_CACHES")))',
         '(allow file-read* (subpath (param "ALLOW_LIBRARY_DEVELOPER")))',
         '(allow file-read* (subpath (param "ALLOW_LIBRARY_LOGS")))',
-    ]
+    ])
     params.extend([
         f"-DDENY_LIBRARY={_canonicalize(home / 'Library')}",
         f"-DALLOW_LIBRARY_CACHES={_canonicalize(home / 'Library' / 'Caches')}",
@@ -227,6 +240,16 @@ def _build_policy(
 
     if write_parts:
         sections.append("(allow file-write*\n" + " ".join(write_parts) + "\n)")
+
+    # User-configured allowed write paths from config.yaml
+    if _allowed_write_paths:
+        aw_parts = ["; user-configured allowed write paths (from config.yaml sandbox.allowed_write_paths)"]
+        for i, raw_path in enumerate(_allowed_write_paths):
+            resolved = _canonicalize(Path(raw_path).expanduser())
+            param_name = f"ALLOWED_WRITE_{i}"
+            aw_parts.append(f'(allow file-write* (subpath (param "{param_name}")))')
+            params.append(f"-D{param_name}={resolved}")
+        sections.append("\n".join(aw_parts))
 
     # Network
     if allow_network:
@@ -356,6 +379,9 @@ def _load_profile() -> tuple[list[str], dict[str, str]]:
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip()
+                # Strip surrounding quotes (single or double)
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                    value = value[1:-1]
                 if key and value:
                     extra_env[key] = value
             else:
@@ -600,10 +626,17 @@ Examples:
 # ── Integration registration ─────────────────────────────────────────────
 
 
-def register(workspace: Path) -> dict:
-    global _workspace
+def register(workspace: Path, *, sandbox_config: dict | None = None) -> dict:
+    global _workspace, _allowed_read_paths, _allowed_write_paths
     _workspace = Path(workspace).resolve()
+    if sandbox_config:
+        _allowed_read_paths = sandbox_config.get("allowed_read_paths", [])
+        _allowed_write_paths = sandbox_config.get("allowed_write_paths", [])
     _init_profile()
+    if _allowed_read_paths:
+        log.info("shell_exec: %d allowed read paths from config", len(_allowed_read_paths))
+    if _allowed_write_paths:
+        log.info("shell_exec: %d allowed write paths from config", len(_allowed_write_paths))
     log.info("shell_exec integration: workspace=%s", _workspace)
     return {
         "name": "shell_exec",

@@ -20,6 +20,7 @@ import logging
 import sys
 from pathlib import Path
 
+from .budget import budget_summary, reset_budget
 from .bus import EventBus
 from .config import load_config, DEFAULT_INTEGRATION_DIR
 from .engine import add_user_message, new_session, run_agent_turn, session_message_count, set_verbose, set_integration_prompts
@@ -28,7 +29,7 @@ from .domain import maybe_detect_domain
 from .extraction import maybe_run_extraction
 from .integrations import discover
 from .knowledge import KnowledgeStore
-from .llm import make_client
+from .llm import make_client, set_llm_verbose
 from .memory import ensure_block_files
 from .tools import build_registry
 
@@ -63,19 +64,21 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--verbose", "-v",
-        action="store_true",
-        help="Enable debug logging",
+        action="count",
+        default=0,
+        help="Verbosity: -v=debug, -vv=tool details, -vvv=raw API responses",
     )
     return p.parse_args()
 
 
-def setup_logging(verbose: bool) -> None:
+def setup_logging(verbose: int) -> None:
     # Suppress library noise, our debug goes through _dbg() in engine.py
     logging.basicConfig(
         level=logging.WARNING,
         format="%(name)s: %(message)s",
     )
     set_verbose(verbose)
+    set_llm_verbose(verbose)
 
 
 def print_banner(cfg) -> None:
@@ -94,7 +97,7 @@ def print_banner(cfg) -> None:
         print(f"  rules:     {len(existing)}/{len(cfg.rules_files)} files loaded")
     if msgs > 0:
         print(f"  session:   {msgs} messages (continuing)")
-    print(f"  commands:  /new /status /quit")
+    print(f"  commands:  /new /status /quit  !cmd !!cmd")
     print()
 
 
@@ -110,6 +113,7 @@ def handle_slash_command(cmd: str, cfg, bus: EventBus, manager=None) -> bool:
 
     if cmd == "/new":
         new_session(cfg)
+        reset_budget()
         if manager:
             manager.reset_all()
         print("[new session started]")
@@ -121,6 +125,7 @@ def handle_slash_command(cmd: str, cfg, bus: EventBus, manager=None) -> bool:
         print(f"  workspace: {cfg.workspace}")
         print(f"  provider:  {cfg.llm.provider}")
         print(f"  data:      {cfg.data_dir}")
+        print(f"  budget:    {budget_summary()}")
         return True
 
     return False
@@ -143,7 +148,11 @@ def main() -> None:
             cfg.llm.chat_model = args.model
 
     # --- discover integrations ---
-    manager = discover(DEFAULT_INTEGRATION_DIR, cfg.workspace)
+    sandbox_config = {
+        "allowed_read_paths": cfg.sandbox.allowed_read_paths,
+        "allowed_write_paths": cfg.sandbox.allowed_write_paths,
+    }
+    manager = discover(DEFAULT_INTEGRATION_DIR, cfg.workspace, sandbox_config=sandbox_config)
     integration_functions = manager.all_functions()
     integration_prompts = manager.all_system_prompts()
     set_integration_prompts(integration_prompts)
@@ -164,7 +173,7 @@ def main() -> None:
     try:
         client = make_client(cfg.llm)
     except ValueError as e:
-        print(f"\033[31mError: {e}\033[0m", file=sys.stderr)
+        print(f"\033[31mError: {e}\033[0m")
         sys.exit(1)
 
     # --- banner ---
@@ -180,6 +189,25 @@ def main() -> None:
 
         user_input = user_input.strip()
         if not user_input:
+            continue
+
+        # ! prefix — direct shell command (!cmd = sandboxed, !!cmd = with network+git)
+        if user_input.startswith("!"):
+            if "shell_run" not in integration_functions:
+                print("[shell_run not available]")
+                continue
+            if user_input.startswith("!!"):
+                shell_cmd = user_input[2:].strip()
+                if shell_cmd:
+                    print(integration_functions["shell_run"](shell_cmd, allow_network=True, allow_git_write=True))
+                else:
+                    print("[empty command]")
+            else:
+                shell_cmd = user_input[1:].strip()
+                if shell_cmd:
+                    print(integration_functions["shell_run"](shell_cmd))
+                else:
+                    print("[empty command]")
             continue
 
         # slash commands

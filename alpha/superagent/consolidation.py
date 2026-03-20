@@ -14,6 +14,7 @@ import json
 import sys
 from pathlib import Path
 
+from .budget import record_and_print
 from .config import Config, CONSOLIDATION_OBSERVATION_CAP
 from .knowledge import KnowledgeStore, Observation, sanitize_name
 from .llm import LLMClient
@@ -24,7 +25,7 @@ RESET = "\033[0m"
 
 
 def _info(text: str) -> None:
-    print(f"{MAGENTA}[consolidation]{RESET} {text}", file=sys.stderr)
+    print(f"{MAGENTA}[consolidation]{RESET} {text}")
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +126,8 @@ def maybe_run_consolidation(
         except Exception as e:
             _info(f"consolidation failed: {e}")
             continue
+
+        record_and_print(response.model, response.input_tokens, response.output_tokens, response.cached_tokens)
 
         # Parse response
         text = response.content or ""

@@ -48,12 +48,23 @@ class LLMConfig:
 
 
 @dataclass
+class SandboxConfig:
+    """Sandbox permission configuration."""
+
+    # Extra paths the seatbelt sandbox is allowed to read (dotfiles, etc.)
+    allowed_read_paths: list[str] = field(default_factory=list)
+    # Extra paths the seatbelt sandbox is allowed to write (tool caches, etc.)
+    allowed_write_paths: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     """Top-level configuration resolved from disk + env."""
 
     data_dir: Path = field(default_factory=lambda: DEFAULT_DATA_DIR)
     workspace: Path = field(default_factory=lambda: Path.cwd())
     llm: LLMConfig = field(default_factory=LLMConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     rules_files: list[str] = field(default_factory=list)
 
     # --- derived paths (set in __post_init__) ---
@@ -149,10 +160,24 @@ def load_config(
     if not isinstance(rules_files, list):
         rules_files = []
 
+    # Sandbox config
+    sandbox_section = file_data.get("sandbox", {})
+    raw_paths = sandbox_section.get("allowed_read_paths", [])
+    if not isinstance(raw_paths, list):
+        raw_paths = []
+    raw_write_paths = sandbox_section.get("allowed_write_paths", [])
+    if not isinstance(raw_write_paths, list):
+        raw_write_paths = []
+    sandbox_cfg = SandboxConfig(
+        allowed_read_paths=[str(p) for p in raw_paths],
+        allowed_write_paths=[str(p) for p in raw_write_paths],
+    )
+
     cfg = Config(
         data_dir=resolved_data,
         workspace=workspace or Path.cwd(),
         llm=llm_cfg,
+        sandbox=sandbox_cfg,
         rules_files=[str(r) for r in rules_files],
     )
     cfg.ensure_dirs()

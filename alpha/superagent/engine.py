@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .budget import record_and_print
 from .bus import EventBus
 from .config import Config
 from .llm import LLMClient, LLMResponse, ToolCall
@@ -36,7 +37,7 @@ log = logging.getLogger(__name__)
 # Debug output — clean, focused, no logging framework noise
 # ---------------------------------------------------------------------------
 
-_verbose = False
+_verbose: int = 0
 
 DIM = "\033[2m"
 CYAN = "\033[36m"
@@ -44,15 +45,19 @@ YELLOW = "\033[33m"
 RESET = "\033[0m"
 
 
-def set_verbose(on: bool) -> None:
+def set_verbose(level: int) -> None:
     global _verbose
-    _verbose = on
+    _verbose = level
 
 
-def _dbg(prefix: str, text: str) -> None:
-    """Print a debug line if verbose mode is on."""
-    if _verbose:
-        print(f"{DIM}{prefix}{RESET} {text}", file=sys.stderr)
+def get_verbose() -> int:
+    return _verbose
+
+
+def _dbg(prefix: str, text: str, level: int = 1) -> None:
+    """Print a debug line if verbosity >= level.  1=basic, 2=detail, 3=raw."""
+    if _verbose >= level:
+        print(f"{DIM}{prefix}{RESET} {text}")
 
 
 # ---------------------------------------------------------------------------
@@ -188,13 +193,6 @@ def compile_system_prompt(cfg: Config) -> str:
     observations_section = _compile_observations_section(cfg.knowledge_dir)
     rules_section = _compile_rules_section(cfg)
 
-    budget_section = (
-        "<budget_info>\n"
-        "  <context_usage>estimating...</context_usage>\n"
-        "  <session_cost>$0.00</session_cost>\n"
-        "</budget_info>"
-    )
-
     return (
         f"You are a file workspace assistant. You help the user manage, "
         f"analyze, and organize files in their workspace at {cfg.workspace}.\n"
@@ -295,7 +293,6 @@ def compile_system_prompt(cfg: Config) -> str:
         f"{observations_section}\n"
         f"\n"
         f"{domain_section}"
-        f"{budget_section}"
     )
 
 
@@ -337,6 +334,7 @@ def run_turn(
         bus.emit("llm_call_error", {"error": str(e)})
         return f"[LLM error: {e}]"
 
+    record_and_print(response.model, response.input_tokens, response.output_tokens, response.cached_tokens)
     _dbg("<- llm:", f"in={response.input_tokens} out={response.output_tokens} stop={response.stop_reason}")
 
     bus.emit("llm_call_end", {

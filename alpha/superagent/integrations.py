@@ -95,11 +95,19 @@ class IntegrationManager:
                     log.exception("reset_session failed for %s", integ.name)
 
 
-def discover(integration_dir: Path, workspace: Path) -> IntegrationManager:
+def discover(
+    integration_dir: Path,
+    workspace: Path,
+    *,
+    sandbox_config: dict | None = None,
+) -> IntegrationManager:
     """Scan integration_dir for .py files, import each, call register().
 
     Returns an IntegrationManager with all successfully loaded integrations.
     Files that fail to load are logged and skipped.
+
+    If sandbox_config is provided, it is passed as a keyword argument to
+    register(). Integrations that don't accept it will ignore it.
     """
     manager = IntegrationManager()
 
@@ -130,7 +138,14 @@ def discover(integration_dir: Path, workspace: Path) -> IntegrationManager:
             continue
 
         try:
-            result = register_fn(workspace)
+            if sandbox_config:
+                try:
+                    result = register_fn(workspace, sandbox_config=sandbox_config)
+                except TypeError:
+                    # Integration doesn't accept sandbox_config — call without it
+                    result = register_fn(workspace)
+            else:
+                result = register_fn(workspace)
         except Exception:
             log.exception("register() failed for %s", py_file.name)
             continue
