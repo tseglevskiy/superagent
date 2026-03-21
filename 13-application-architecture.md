@@ -350,6 +350,32 @@ class OllamaClient:
             "tools": tools,
         })
         return LLMResponse.from_ollama(await response.json())
+
+
+# --- Lightweight delegation primitives (see "The Subagent Weight Spectrum") ---
+
+# Model registry: short aliases → LLMClient instances
+_clients: dict[str, LLMClient] = {}  # populated at startup from config
+
+def get_client(model: str) -> LLMClient:
+    """Resolve a model alias ("haiku", "sonnet", "ollama-qwen") to a client."""
+    return _clients[model]
+
+async def ask(model: str, prompt: str, system: str = "") -> str:
+    """Level 0: One LLM call. The lightest possible delegation."""
+    client = get_client(model)
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    return (await client.call(messages)).text
+
+async def pipeline(model: str, steps: list[str], input: str) -> str:
+    """Level 1: Chain of LLM calls. Each step's output feeds the next."""
+    result = input
+    for step in steps:
+        result = await ask(model, step.replace("{input}", result))
+    return result
 ```
 
 ---
@@ -405,11 +431,159 @@ If it has the right signature, it works.
 
 ---
 
-## SubAgent Spawning
+## The Subagent Weight Spectrum
 
-A child agent is a SEPARATE `run_agent` with its own queue, its own state, and its own reducer.
+The agent frequently needs to delegate work: scan a document for relevance, summarize a file, classify a task, run a focused research dive.
+These tasks have wildly different complexity.
+Using the same heavyweight mechanism for all of them is wrong.
+
+**The core problem:** when the main agent needs to decide "is this 50K document worth reading?", it faces a dilemma.
+If it reads the document to decide, it has already spent the context.
+If it reasons about whether to read it, it spends context on the meta-decision.
+The answer: delegate to a cheap model that scans the document OUTSIDE the main context.
+But this delegation must be trivially lightweight — as simple as writing `re.findall(pattern, text)`.
+
+Four levels of subagent weight, from lightest to heaviest.
+**From the main agent's perspective, ALL four look the same: an async function that takes input and returns a string.**
+The agent does not know or care which level it is using.
+
+### Level 0: Single LLM Call — `ask()`
+
+Not even an "agent."
+A single request to a specified model.
+The primitive building block.
+
+```python
+async def ask(model: str, prompt: str, system: str = "") -> str:
+    """One LLM call. The lightest possible delegation.
+    Returns the model's text response."""
+    client = get_client(model)
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    response = await client.call(messages)
+    return response.text
+```
+
+The main agent uses it inline in code-as-action:
+
+```python
+# Is this document worth reading in full?
+score = await ask("haiku", f"Rate 0-100 how relevant this is to '{topic}':\n{doc[:30000]}")
+if int(score) > 40:
+    full_content = await get_file(path)  # worth the main context cost
+else:
+    brief = await ask("haiku", f"3-sentence summary:\n{doc[:30000]}")
+    # proceed with just the summary — main context gets 3 sentences, not 30K
+```
+
+Five lines.
+The 30K document never enters the main agent's context.
+The main context gets back a number or three sentences.
+Cost: one Haiku call (~$0.001).
+Latency: ~1 second.
+
+This is the document scanning use case: the main agent writes a loop that scans 50 documents with `ask("haiku", ...)`, collects relevance scores, then reads only the top 5 in full.
+The main context sees: the loop code + 5 full documents.
+NOT: 50 full documents.
+
+### Level 1: Pipeline — `pipeline()`
+
+Two or three LLM calls chained.
+Still no loop, no tools, no state machine.
+For tasks that need a multi-step process but not autonomy.
+
+```python
+async def pipeline(model: str, steps: list[str], input: str) -> str:
+    """Chain of LLM calls. Each step's output feeds the next.
+    {input} in each step template is replaced with the previous output."""
+    result = input
+    for step in steps:
+        prompt = step.replace("{input}", result)
+        result = await ask(model, prompt)
+    return result
+```
+
+The agent uses it for structured extraction:
+
+```python
+# Extract, then evaluate, then summarize
+result = await pipeline("haiku", [
+    "Extract all section headings from this document:\n{input}",
+    "Which of these sections discuss authentication or security? List them:\n{input}",
+    "For each relevant section, write a one-line summary:\n{input}",
+], document_text)
+```
+
+Three LLM calls, ~$0.003, ~3 seconds.
+The main context gets a few lines of targeted summary, not the whole document.
+
+### Level 2: Mini-Agent — `MiniAgent`
+
+A lightweight agent with tools and a loop, but bounded.
+For tasks that need autonomy (tool calling, branching decisions) but are small and focused.
+
+```python
+@dataclass
+class MiniAgent:
+    """A bounded agent loop. No queue, no reducer, no event bus.
+    Just a while loop with tools and a step limit."""
+    model: str
+    tools: list[Tool] = field(default_factory=list)
+    max_steps: int = 5
+    system: str = ""
+
+    async def run(self, task: str) -> str:
+        messages = []
+        if self.system:
+            messages.append({"role": "system", "content": self.system})
+        messages.append({"role": "user", "content": task})
+
+        tool_schemas = [t.schema for t in self.tools] if self.tools else None
+        client = get_client(self.model)
+
+        for _ in range(self.max_steps):
+            response = await client.call(messages, tools=tool_schemas)
+
+            if not response.tool_calls:
+                return response.text  # done — return final answer
+
+            # Execute tool calls, add results to messages
+            messages.append({"role": "assistant", "content": response.raw})
+            for call in response.tool_calls:
+                tool = next(t for t in self.tools if t.name == call.name)
+                result = await tool.handler(call.args)
+                messages.append({"role": "tool", "content": result, "tool_call_id": call.id})
+
+        return messages[-1]["content"]  # return last response if max_steps hit
+```
+
+The agent creates and runs mini-agents inline:
+
+```python
+# A mini-agent that can read files to find relevant code
+scanner = MiniAgent("haiku", tools=[get_file, get_lines, list_dir], max_steps=5)
+findings = await scanner.run(f"Find all files related to authentication in {repo_path}. "
+                              f"Return a list of file paths with one-line descriptions.")
+```
+
+The `MiniAgent` is just a data structure — 30 lines of code.
+No queue, no reducer, no event bus.
+A while loop with tools.
+It runs to completion and returns a string.
+
+From the main agent's perspective, `await scanner.run(task)` is the same as `await bash("find . -name '*.py'")` — an async call that returns text.
+The mini-agent's internal conversation (maybe 3-4 tool calls to Haiku) never enters the main context.
+The main context sees only the final answer.
+
+### Level 3: Full Agent — `spawn_subagent()`
+
+A separate `run_agent` with its own queue, its own state, and its own reducer.
 The parent emits a `spawn_child` effect; the effect executor starts the child as an async task.
 When the child reaches IDLE with a final result, it pushes a `child_returned` event to the parent's queue.
+
+Reserved for genuinely complex tasks: deep research with parallel sub-agents, long-running background coding, tasks that need their own memory blocks and domain knowledge.
 
 ```python
 async def spawn_subagent(
@@ -449,8 +623,35 @@ async def spawn_subagent(
     asyncio.create_task(child_loop())
 ```
 
-Context folding happens naturally: the child's entire work (search results, code execution, debugging) stays in the child's queue.
-The parent sees only the `child_returned` event with the compressed result.
+### When to Use Each Level
+
+| Level | Weight | Use When | Example |
+|---|---|---|---|
+| 0: `ask()` | ~0 | Classification, scoring, summarization, yes/no decisions | "Is this document relevant? Rate 0-100." |
+| 1: `pipeline()` | ~0 | Multi-step extraction where each step needs the previous output | "Extract headings → filter relevant → summarize each" |
+| 2: `MiniAgent` | Low | Small autonomous tasks that need tool access | "Scan this repo for auth-related files" |
+| 3: `spawn_subagent()` | High | Complex tasks needing own state, memory, and context inheritance | "Research quantum error correction thoroughly" |
+
+**The key design property:** Levels 0-2 are available inside code-as-action.
+The main agent writes Python code that creates and invokes them inline.
+Creating a Level 0 or 1 subagent is no more code than a regex operation.
+Creating a Level 2 subagent is no more code than opening a file and processing it.
+
+Level 3 is a system-level operation — it involves the reducer, the event queue, and context inheritance.
+But even Level 3 is just a function call from the agent's perspective: `await spawn_subagent(task, "blocks")`.
+
+### Context Folding Across All Levels
+
+Context folding happens naturally at every level: the subagent's work stays in the subagent's context.
+The parent sees only the result string.
+
+- Level 0: Haiku processes 30K tokens of document. Main context gets: "73" (two tokens).
+- Level 1: Haiku makes 3 calls processing 50K total. Main context gets: 5 lines of summary.
+- Level 2: Haiku makes 5 tool calls, reads 4 files. Main context gets: a paragraph of findings.
+- Level 3: Sonnet runs 20 steps with full research. Main context gets: a structured report.
+
+In every case, the main agent's context is protected.
+The subagent is a **context firewall** — complexity goes in, a summary comes out.
 
 ---
 
@@ -591,6 +792,12 @@ System prompt:
     async def plan_complete(node, summary): ...
     async def spawn_subagent(task, inherit="blocks") -> str: ...
     async def inspect_function(name) -> str: ...
+
+  [lightweight delegation — see "The Subagent Weight Spectrum"]
+    async def ask(model, prompt, system="") -> str: ...   # Level 0: one LLM call
+    async def pipeline(model, steps, input) -> str: ...   # Level 1: chained LLM calls
+    class MiniAgent(model, tools, max_steps=5):            # Level 2: bounded agent with tools
+        async def run(task) -> str: ...
 ```
 
 Declarative knowledge and procedural knowledge travel TOGETHER.
@@ -667,6 +874,61 @@ When the agent writes code that works:
 The agent's working code becomes tomorrow's reusable function.
 No translation step.
 This is Voyager's skill library, but in Python instead of JavaScript, and with block attachment instead of standalone retrieval.
+
+### Example: Research With Document Scanning
+
+The user asks: "Research how our competitors handle rate limiting. Check all the docs in /docs/competitors/."
+
+The main agent (Sonnet) writes code-as-action:
+
+```python
+# Step 1: Discover all documents
+files = await bash("find /docs/competitors -name '*.md' -o -name '*.pdf' | head -50")
+paths = files.strip().split("\n")
+
+# Step 2: Cheap scan — ask Haiku to score each doc's relevance
+# Each doc is processed OUTSIDE main context. Cost: ~$0.05 for 50 docs.
+scored = []
+for path in paths:
+    content = await get_file(path)
+    score = await ask("haiku",
+        f"Rate 0-100 how relevant this document is to 'rate limiting' "
+        f"(API throttling, quota management, backpressure). "
+        f"Reply with ONLY a number.\n\n{content[:30000]}")
+    try:
+        scored.append((path, int(score.strip())))
+    except ValueError:
+        scored.append((path, 0))
+
+# Step 3: Sort by relevance, take top 5
+scored.sort(key=lambda x: -x[1])
+top_docs = scored[:5]
+
+# Step 4: For each top doc, extract the relevant sections via pipeline
+summaries = []
+for path, score in top_docs:
+    content = await get_file(path)
+    summary = await pipeline("haiku", [
+        "Extract all sections from this document that discuss rate limiting, "
+        "throttling, quotas, or backpressure:\n{input}",
+        "Summarize each extracted section in 2-3 sentences, preserving "
+        "specific numbers, thresholds, and algorithm names:\n{input}",
+    ], content)
+    summaries.append(f"## {path} (relevance: {score}/100)\n{summary}")
+
+# Step 5: Return combined findings to main context
+result = "\n\n".join(summaries)
+```
+
+What happened:
+- The main agent (Sonnet) wrote ~25 lines of Python. That code IS the research strategy.
+- Haiku processed 50 documents × 30K chars = 1.5M tokens of raw documents. None of it entered Sonnet's context.
+- Haiku ran 10 more pipeline calls (2 per top doc). Still outside Sonnet's context.
+- Sonnet's context received: the code above + the final `result` string (maybe 2K tokens of targeted summaries).
+- Total cost: ~$0.05 for Haiku scanning + ~$0.01 for Haiku pipelines + Sonnet's main context cost.
+- If the agent had read all 50 documents directly: 1.5M tokens in Sonnet's context = ~$4.50 and likely context overflow.
+
+**The agent did not need to be told to use `ask()` or `pipeline()`.** It has them in its function list and decides when to use them, just as it decides when to use `bash()` or `get_file()`. The lightweight delegation primitives are just tools — the agent composes them through code.
 
 ---
 
