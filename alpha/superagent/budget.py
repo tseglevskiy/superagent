@@ -32,7 +32,7 @@ MODEL_PRICING: dict[str, tuple[float, float, float]] = {
 
 # Context window sizes (total tokens)
 MODEL_CONTEXT: dict[str, int] = {
-    "anthropic/claude-opus-4.6": 200_000,
+    "anthropic/claude-opus-4.6": 1_000_000,
     "anthropic/claude-sonnet-4": 200_000,
     "anthropic/claude-haiku-3.5": 200_000,
     "openai/gpt-4.1-nano": 1_048_576,
