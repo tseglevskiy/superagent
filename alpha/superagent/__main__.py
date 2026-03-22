@@ -50,7 +50,13 @@ def parse_args() -> argparse.Namespace:
         "--data-dir", "-d",
         type=Path,
         default=None,
-        help="Data directory (default: ~/.superagent-sandbox)",
+        help="Working folder for sessions, memory, config (default: <workspace>/.superagent)",
+    )
+    p.add_argument(
+        "--knowledge-dir", "-k",
+        type=Path,
+        default=None,
+        help="Knowledge folder for observations and domains (default: <workspace>/.superknowledge)",
     )
     p.add_argument(
         "--provider", "-p",
@@ -93,6 +99,7 @@ def print_banner(cfg) -> None:
     print(f"  workspace: {cfg.workspace}")
     print(f"  provider:  {provider}  model: {model}")
     print(f"  data:      {cfg.data_dir}")
+    print(f"  knowledge: {cfg.knowledge_dir}")
     if cfg.rules_files:
         existing = [r for r in cfg.rules_files if (cfg.workspace / r).is_file()]
         print(f"  rules:     {len(existing)}/{len(cfg.rules_files)} files loaded")
@@ -164,6 +171,7 @@ async def main() -> None:
     cfg = load_config(
         workspace=args.workspace,
         data_dir=args.data_dir,
+        knowledge_dir=args.knowledge_dir,
         provider=args.provider,
     )
     if args.model:

@@ -17,7 +17,8 @@ import yaml
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "sandbox"
+DEFAULT_DATA_DIR_NAME = ".superagent"
+DEFAULT_KNOWLEDGE_DIR_NAME = ".superknowledge"
 DEFAULT_INTEGRATION_DIR = Path(__file__).resolve().parent.parent / "integration"
 DEFAULT_OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_CHAT_MODEL = "anthropic/claude-opus-4.6"
@@ -61,8 +62,9 @@ class SandboxConfig:
 class Config:
     """Top-level configuration resolved from disk + env."""
 
-    data_dir: Path = field(default_factory=lambda: DEFAULT_DATA_DIR)
+    data_dir: Path = field(default_factory=lambda: Path.cwd() / DEFAULT_DATA_DIR_NAME)
     workspace: Path = field(default_factory=lambda: Path.cwd())
+    knowledge_dir: Path = field(default_factory=lambda: Path.cwd() / DEFAULT_KNOWLEDGE_DIR_NAME)
     llm: LLMConfig = field(default_factory=LLMConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     rules_files: list[str] = field(default_factory=list)
@@ -70,13 +72,11 @@ class Config:
     # --- derived paths (set in __post_init__) ---
     memory_dir: Path = field(init=False)
     sessions_dir: Path = field(init=False)
-    knowledge_dir: Path = field(init=False)
     lockfile_dir: Path = field(init=False)
 
     def __post_init__(self) -> None:
         self.memory_dir = self.data_dir / "memory"
         self.sessions_dir = self.data_dir / "sessions"
-        self.knowledge_dir = self.data_dir / "knowledge"
         self.lockfile_dir = self.data_dir / "lockfiles"
 
     # --- convenience ---
@@ -87,9 +87,9 @@ class Config:
             self.data_dir,
             self.memory_dir,
             self.sessions_dir,
+            self.lockfile_dir,
             self.knowledge_dir,
             self.knowledge_dir / "domains",
-            self.lockfile_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)
 
@@ -111,14 +111,19 @@ def load_config(
     *,
     workspace: Path | None = None,
     data_dir: Path | None = None,
+    knowledge_dir: Path | None = None,
     provider: str | None = None,
 ) -> Config:
     """Build a Config from disk file + env vars + CLI overrides.
 
     Priority (highest wins): CLI arg > env var > config.yaml > default.
     """
+    resolved_workspace = workspace or Path.cwd()
     resolved_data = data_dir or Path(
-        os.environ.get("SUPERAGENT_DATA_DIR", str(DEFAULT_DATA_DIR))
+        os.environ.get("SUPERAGENT_DATA_DIR", str(resolved_workspace / DEFAULT_DATA_DIR_NAME))
+    )
+    resolved_knowledge = knowledge_dir or Path(
+        os.environ.get("SUPERAGENT_KNOWLEDGE_DIR", str(resolved_workspace / DEFAULT_KNOWLEDGE_DIR_NAME))
     )
     config_path = resolved_data / "config.yaml"
 
@@ -175,7 +180,8 @@ def load_config(
 
     cfg = Config(
         data_dir=resolved_data,
-        workspace=workspace or Path.cwd(),
+        workspace=resolved_workspace,
+        knowledge_dir=resolved_knowledge,
         llm=llm_cfg,
         sandbox=sandbox_cfg,
         rules_files=[str(r) for r in rules_files],

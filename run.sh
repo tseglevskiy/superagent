@@ -15,9 +15,10 @@ ALPHA_DIR="$SCRIPT_DIR/alpha"
 
 CONDA_ENV="sandbox"
 
-# Agent working directory at project root
+# Agent working directory and knowledge at project root
 AGENT_DIR="$PROJECT_ROOT/.superagent"
-mkdir -p "$AGENT_DIR"
+KNOWLEDGE_DIR="$PROJECT_ROOT/.superknowledge"
+mkdir -p "$AGENT_DIR" "$KNOWLEDGE_DIR"
 
 # Activate conda (not active by default in non-interactive shells)
 eval "$(conda shell.bash hook 2>/dev/null)"
@@ -28,4 +29,4 @@ export PYTHONPATH="$ALPHA_DIR:${PYTHONPATH:-}"
 cd "$PROJECT_ROOT"
 # Use `python` not `python3` — conda activate sets `python` to the env's
 # interpreter, but `python3` may still resolve to Homebrew's system Python.
-exec python -m superagent --workspace "$PROJECT_ROOT" --data-dir "$AGENT_DIR" "$@"
+exec python -m superagent --workspace "$PROJECT_ROOT" --data-dir "$AGENT_DIR" --knowledge-dir "$KNOWLEDGE_DIR" "$@"
