@@ -1,10 +1,10 @@
 """CLI entry point — python -m superagent
 
-A readline loop that:
+An async readline loop that:
   1. Reads user input
   2. Appends it to the session JSONL on disk
-  3. Runs the stateless engine turn (read disk → LLM → write disk)
-  4. Prints the response
+  3. Runs the stateless engine turn (read disk → stream LLM → write disk)
+  4. Streams the response tokens to terminal as they arrive
   5. Repeats
 
 Special commands:
@@ -16,6 +16,7 @@ Special commands:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -101,13 +102,13 @@ def print_banner(cfg) -> None:
     print()
 
 
-def handle_slash_command(
+async def handle_slash_command(
     cmd: str,
     cfg,
     bus: EventBus,
     manager=None,
-    client: "LLMClient | None" = None,
-    store: "KnowledgeStore | None" = None,
+    client=None,
+    store=None,
 ) -> bool:
     """Handle slash commands.  Returns True if the command was handled."""
     cmd = cmd.strip().lower()
@@ -122,13 +123,13 @@ def handle_slash_command(
         # Extract knowledge from pending messages before archiving
         if client and store:
             try:
-                extracted = maybe_run_extraction(cfg, client, store, force=True)
+                extracted = await maybe_run_extraction(cfg, client, store, force=True)
             except Exception as e:
                 print(f"\033[31m[extraction error: {e}]\033[0m")
                 extracted = False
             if extracted:
                 try:
-                    maybe_run_consolidation(cfg, client, store)
+                    await maybe_run_consolidation(cfg, client, store)
                 except Exception as e:
                     print(f"\033[31m[consolidation error: {e}]\033[0m")
         new_session(cfg)
@@ -150,7 +151,12 @@ def handle_slash_command(
     return False
 
 
-def main() -> None:
+def _stream_token(text: str) -> None:
+    """Callback for streaming LLM tokens to terminal."""
+    print(text, end="", flush=True)
+
+
+async def main() -> None:
     args = parse_args()
     setup_logging(args.verbose)
 
@@ -198,10 +204,10 @@ def main() -> None:
     # --- banner ---
     print_banner(cfg)
 
-    # --- readline loop ---
+    # --- async readline loop ---
     while True:
         try:
-            user_input = input("\033[32m> \033[0m")
+            user_input = await asyncio.to_thread(input, "\033[32m> \033[0m")
         except (EOFError, KeyboardInterrupt):
             print("\nbye")
             break
@@ -231,22 +237,22 @@ def main() -> None:
 
         # slash commands
         if user_input.startswith("/"):
-            if handle_slash_command(user_input, cfg, bus, manager, client=client, store=store):
+            if await handle_slash_command(user_input, cfg, bus, manager, client=client, store=store):
                 continue
             print(f"[unknown command: {user_input}]")
             continue
 
-        # --- the core loop: write to disk → call LLM → write to disk ---
+        # --- the core loop: write to disk → stream LLM → write to disk ---
         add_user_message(cfg, user_input)
 
         # Detect domain before the turn (updates current_domain memory block)
         try:
-            maybe_detect_domain(cfg, client, user_input)
+            await maybe_detect_domain(cfg, client, user_input)
         except Exception:
             pass  # domain detection failure is not critical
 
         try:
-            response = run_agent_turn(cfg, client, registry, bus)
+            response = await run_agent_turn(cfg, client, registry, bus, on_token=_stream_token)
         except KeyboardInterrupt:
             print("\n[interrupted]")
             continue
@@ -255,8 +261,8 @@ def main() -> None:
             print(f"\033[31m[error: {e}]\033[0m")
             continue
 
+        # Newline after streamed tokens, then blank line for spacing
         print()
-        print(response)
         print()
 
         # Cleanup integration state between turns (e.g., drop clean file handle buffers)
@@ -264,7 +270,7 @@ def main() -> None:
 
         # Check if extraction is due (foreground, visible)
         try:
-            extracted = maybe_run_extraction(cfg, client, store)
+            extracted = await maybe_run_extraction(cfg, client, store)
         except Exception as e:
             print(f"\033[31m[extraction error: {e}]\033[0m")
             extracted = False
@@ -272,10 +278,10 @@ def main() -> None:
         # Check if consolidation is needed (foreground, after extraction)
         if extracted:
             try:
-                maybe_run_consolidation(cfg, client, store)
+                await maybe_run_consolidation(cfg, client, store)
             except Exception as e:
                 print(f"\033[31m[consolidation error: {e}]\033[0m")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

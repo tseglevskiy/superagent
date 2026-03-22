@@ -74,7 +74,7 @@ def _format_observations(observations: list[Observation]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def maybe_run_consolidation(
+async def maybe_run_consolidation(
     cfg: Config,
     client: LLMClient,
     store: KnowledgeStore,
@@ -118,7 +118,7 @@ def maybe_run_consolidation(
         _info(f"calling {model} with {len(domain_obs)} observations...")
 
         try:
-            response = client.call(
+            response = await client.call(
                 [{"role": "user", "content": prompt}],
                 model=model,
                 temperature=0.3,

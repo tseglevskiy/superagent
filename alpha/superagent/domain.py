@@ -95,7 +95,7 @@ def _get_recent_messages(cfg: Config, n: int = 3) -> str:
     return "\n".join(messages[-n:]) if messages else "(no history)"
 
 
-def detect_domain(
+async def detect_domain(
     cfg: Config,
     client: LLMClient,
     user_message: str,
@@ -120,7 +120,7 @@ def detect_domain(
     )
 
     try:
-        response = client.call(
+        response = await client.call(
             [{"role": "user", "content": prompt}],
             model=cfg.llm.fast_model,
             temperature=0.0,
@@ -186,7 +186,7 @@ def _write_pending(cfg: Config, pending: dict[str, int]) -> None:
                  yaml.dump(pending, default_flow_style=False))
 
 
-def maybe_detect_domain(
+async def maybe_detect_domain(
     cfg: Config,
     client: LLMClient,
     user_message: str,
@@ -196,7 +196,7 @@ def maybe_detect_domain(
     New domains require 3+ mentions before being created. Until then,
     they accumulate in pending_domains.yaml and map to 'uncategorized'.
     """
-    domain = detect_domain(cfg, client, user_message)
+    domain = await detect_domain(cfg, client, user_message)
     if not domain:
         _info("domain: (not detected)")
         return None

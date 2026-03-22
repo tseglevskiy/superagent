@@ -155,7 +155,7 @@ def _format_transcript(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _segment_episodes(messages: list[dict], client: LLMClient, model: str) -> list[dict]:
+async def _segment_episodes(messages: list[dict], client: LLMClient, model: str) -> list[dict]:
     """Call LLM to segment messages into episodes. Returns list of episode dicts."""
     if len(messages) < 2:
         # Too few messages, treat as single episode
@@ -165,7 +165,7 @@ def _segment_episodes(messages: list[dict], client: LLMClient, model: str) -> li
     prompt = SEGMENTATION_PROMPT.format(numbered_transcript=transcript)
 
     try:
-        response = client.call(
+        response = await client.call(
             [{"role": "user", "content": prompt}],
             model=model,
             temperature=0.2,
@@ -259,7 +259,7 @@ Return JSON only:
 If existing knowledge covers everything, return: {{"observations": []}}"""
 
 
-def _extract_from_episode(
+async def _extract_from_episode(
     episode_messages: str,
     topic: str,
     domain: str,
@@ -287,7 +287,7 @@ def _extract_from_episode(
         )
 
     try:
-        response = client.call(
+        response = await client.call(
             [{"role": "user", "content": prompt}],
             model=model,
             temperature=0.2,
@@ -316,7 +316,7 @@ def _extract_from_episode(
 # ---------------------------------------------------------------------------
 
 
-def maybe_run_extraction(
+async def maybe_run_extraction(
     cfg: Config,
     client: LLMClient,
     store: KnowledgeStore,
@@ -354,7 +354,7 @@ def maybe_run_extraction(
 
     # Step 1: Segment into episodes
     _info("segmenting into episodes...")
-    episodes = _segment_episodes(messages, client, model)
+    episodes = await _segment_episodes(messages, client, model)
     _info(f"found {len(episodes)} episodes")
 
     # Step 2: Extract observations from each episode
@@ -377,7 +377,7 @@ def maybe_run_extraction(
         _info(f"  episode: {topic} ({len(ep_msgs)} msgs)")
 
         # Extract
-        raw_obs = _extract_from_episode(ep_text, topic, domain, store, client, model)
+        raw_obs = await _extract_from_episode(ep_text, topic, domain, store, client, model)
 
         # Store
         session_name = cfg.session_file.name

@@ -6,7 +6,7 @@ Every turn:
   1. Read session JSONL from disk  (conversation history)
   2. Read memory block files from disk  (working memory)
   3. Compile system prompt + history into messages
-  4. Call LLM
+  4. Stream LLM response (tokens printed as they arrive)
   5. Write assistant response to session JSONL
   6. If tool calls → execute, write results to JSONL, goto 1
   7. Display response
@@ -21,12 +21,12 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .budget import record_and_print
 from .bus import EventBus
 from .config import Config
-from .llm import LLMClient, LLMResponse, ToolCall
+from .llm import LLMClient, LLMResponse, LLMChunk, ToolCall
 from .knowledge import KnowledgeStore, get_functions
 from .memory import compile_blocks_xml, ensure_block_files
 from .tools import ToolRegistry
@@ -297,18 +297,66 @@ def compile_system_prompt(cfg: Config) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Streaming accumulation — collect chunks into a complete response
+# ---------------------------------------------------------------------------
+
+
+def _accumulate_stream_response(
+    chunks_content: list[str],
+    tool_calls_acc: dict[int, dict],
+    usage_input: int,
+    usage_output: int,
+    usage_cached: int,
+    model: str,
+    finish_reason: str,
+) -> LLMResponse:
+    """Build an LLMResponse from accumulated streaming data."""
+    content = "".join(chunks_content) or None
+
+    tc_list: list[ToolCall] = []
+    for idx in sorted(tool_calls_acc.keys()):
+        tc_data = tool_calls_acc[idx]
+        args_str = tc_data.get("arguments", "")
+        try:
+            args = json.loads(args_str) if args_str else {}
+        except json.JSONDecodeError:
+            args = {"_raw": args_str}
+        tc_list.append(ToolCall(
+            id=tc_data.get("id", f"tc_{idx}"),
+            name=tc_data.get("name", "unknown"),
+            arguments=args,
+        ))
+
+    return LLMResponse(
+        content=content,
+        tool_calls=tc_list,
+        input_tokens=usage_input,
+        output_tokens=usage_output,
+        cached_tokens=usage_cached,
+        model=model,
+        stop_reason=finish_reason,
+    )
+
+
+# ---------------------------------------------------------------------------
 # The turn: one full read-call-write cycle
 # ---------------------------------------------------------------------------
 
 
-def run_turn(
+async def run_turn(
     cfg: Config,
     client: LLMClient,
     registry: ToolRegistry,
     bus: EventBus,
+    *,
+    on_token: Callable[[str], None] | None = None,
 ) -> str | None:
     """Execute one complete turn.  Returns the assistant's text response,
     or None if the conversation ended with a tool call (more turns needed).
+
+    Args:
+        on_token: Optional callback invoked with each text delta as it streams.
+                  For CLI: lambda t: print(t, end="", flush=True)
     """
     system_prompt = compile_system_prompt(cfg)
     history = load_history(cfg.session_file)
@@ -326,10 +374,61 @@ def run_turn(
         elif role == "tool":
             _dbg("-> tool result:", content[:200])
 
-    # Call LLM
+    # Stream LLM response
     bus.emit("llm_call_start", {"msg_count": len(messages)})
+
     try:
-        response = client.call(messages, tools=tool_schemas if tool_schemas else None)
+        # Accumulate streaming chunks
+        chunks_content: list[str] = []
+        tool_calls_acc: dict[int, dict] = {}  # index -> {id, name, arguments}
+        usage_input = 0
+        usage_output = 0
+        usage_cached = 0
+        finish_reason = ""
+        model = ""
+
+        async for chunk in client.stream(
+            messages,
+            tools=tool_schemas if tool_schemas else None,
+        ):
+            # Text content
+            if chunk.content:
+                chunks_content.append(chunk.content)
+                if on_token:
+                    on_token(chunk.content)
+
+            # Tool call accumulation
+            if chunk.tool_call_index is not None:
+                idx = chunk.tool_call_index
+                if idx not in tool_calls_acc:
+                    tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                if chunk.tool_call_id:
+                    tool_calls_acc[idx]["id"] = chunk.tool_call_id
+                if chunk.tool_call_name:
+                    tool_calls_acc[idx]["name"] = chunk.tool_call_name
+                if chunk.tool_call_arguments_delta:
+                    tool_calls_acc[idx]["arguments"] += chunk.tool_call_arguments_delta
+
+            # Finish reason
+            if chunk.finish_reason:
+                finish_reason = chunk.finish_reason
+
+            # Usage (final chunk)
+            if chunk.input_tokens:
+                usage_input = chunk.input_tokens
+            if chunk.output_tokens:
+                usage_output = chunk.output_tokens
+            if chunk.cached_tokens:
+                usage_cached = chunk.cached_tokens
+            if chunk.model:
+                model = chunk.model
+
+        response = _accumulate_stream_response(
+            chunks_content, tool_calls_acc,
+            usage_input, usage_output, usage_cached,
+            model, finish_reason,
+        )
+
     except Exception as e:
         bus.emit("llm_call_error", {"error": str(e)})
         return f"[LLM error: {e}]"
@@ -416,17 +515,18 @@ def run_turn(
         return response.content or ""
 
 
-def run_agent_turn(
+async def run_agent_turn(
     cfg: Config,
     client: LLMClient,
     registry: ToolRegistry,
     bus: EventBus,
     *,
     max_tool_rounds: int = 20,
+    on_token: Callable[[str], None] | None = None,
 ) -> str:
     """Run turns until the agent produces a text response."""
     for i in range(max_tool_rounds):
-        result = run_turn(cfg, client, registry, bus)
+        result = await run_turn(cfg, client, registry, bus, on_token=on_token)
         if result is not None:
             return result
     return "[max tool rounds reached]"
