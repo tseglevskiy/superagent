@@ -1,0 +1,21 @@
+---
+title: "Single agent — decorator-based state machine"
+---
+stateDiagram-v2
+    [*] --> AwaitingInput
+
+    AwaitingInput --> CallingLLM : UserMessage
+
+    CallingLLM --> ExecutingCode : LLMResponseTools
+    CallingLLM --> AwaitingInput : LLMResponseText
+    CallingLLM --> Extracting : LLMResponseText
+    CallingLLM --> AwaitingInput : LLMError
+
+    Consolidating --> AwaitingInput : ConsolidationDone
+
+    ExecutingCode --> CallingLLM : CodeDone
+    ExecutingCode --> CallingLLM : CodeError
+
+    Extracting --> AwaitingInput : ExtractionDone
+    Extracting --> Consolidating : ConsolidationNeeded
+

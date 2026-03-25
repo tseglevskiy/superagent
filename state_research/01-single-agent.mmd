@@ -1,0 +1,32 @@
+---
+title: "Single agent — user talks, agent reasons and acts"
+---
+stateDiagram-v2
+    [*] --> IDLE
+
+    IDLE --> CALLING_LLM : user_message<br/>write_user_message, compile_and_call_llm
+
+    CALLING_LLM --> INTERPRETING : llm_response_tools<br/>record_budget, write_assistant_msg, start_interpreter
+    CALLING_LLM --> DISPLAYING : llm_response_text<br/>record_budget, write_assistant_msg
+    CALLING_LLM --> IDLE : llm_error<br/>display_error
+
+    INTERPRETING --> CALLING_LLM : interpreter_done<br/>write_tool_results, compile_and_call_llm
+    INTERPRETING --> WAITING_IO : interpreter_yield<br/>submit_to_dispatcher
+    INTERPRETING --> CALLING_LLM : interpreter_error<br/>write_tool_error, compile_and_call_llm
+    INTERPRETING --> DISPLAYING : max_rounds_hit<br/>display_max_rounds
+
+    WAITING_IO --> INTERPRETING : io_result<br/>resume_interpreter
+    WAITING_IO --> INTERPRETING : io_error<br/>resume_interpreter_with_error
+
+    DISPLAYING --> CLEANING_UP : display_done
+
+    CLEANING_UP --> EXTRACTING : extraction_needed<br/>cleanup_integrations
+    CLEANING_UP --> IDLE : no_extraction<br/>cleanup_integrations
+
+    EXTRACTING --> IDLE : extraction_done
+    EXTRACTING --> CONSOLIDATING : consolidation_needed
+    EXTRACTING --> IDLE : error<br/>display_error
+
+    CONSOLIDATING --> IDLE : consolidation_done
+    CONSOLIDATING --> IDLE : error<br/>display_error
+

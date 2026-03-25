@@ -2,7 +2,7 @@
 
 ## Next use cases to model
 
-- [x] **Research agent architecture** — done as 04-open-deep-research.py
+- [ ] **Rework 01-single-agent** — current version uses the universal 8-state machine. Needs to be reworked into an architecture-specific state machine following D13.
 - [ ] **Human-in-the-loop as async I/O** — resolved conceptually in DESIGN.md (D9: ask_user() is a yield to HumanDispatcher). Might still want a snippet showing approval flow or subagent asking user.
 - [ ] **Coroutines instead of explicit state machine** — the state machine (S, E, T transition table) might be unnecessary boilerplate if the entire agent loop is an async coroutine with await at yield points. Need to think through tradeoffs: visibility/debuggability of explicit transitions vs simplicity of coroutine code.
 
@@ -105,3 +105,18 @@ __Мой рекомендованный минимальный набор для
 9. __CrewAI__ — multi-agent orchestration
 
 Это 9 архитектурно различных семей + твои 4 research agents = 13 архитектур. Если framework может выразить все 13, он действительно универсален.
+
+
+---
+
+## Removed snippets
+
+The following snippets were removed because they all used the identical universal 8-state machine (IDLE, CALLING_LLM, INTERPRETING, WAITING_IO, DISPLAYING, CLEANING_UP, EXTRACTING, CONSOLIDATING) and produced indistinguishable diagrams. Their architectural insights are preserved in DESIGN.md. The remaining snippets (01, 05b, 07b, 09) each have architecture-specific state machines per D13.
+
+- `02-single-subagent.py` - agent spawns one child, waits. Same SM as 01, proved spawn is just a yield.
+- `03-parallel-subagents.py` - agent spawns N children. Same SM as 01, proved spawn_all is just a yield.
+- `04-open-deep-research.py` - supervisor + parallel researchers. Same SM, proved ODR maps to our model.
+- `05-paperqa-toolselector.py` - PaperQA2 ToolSelector with 6 tools. Same SM, tools as yield points in code. Superseded by 05b.
+- `06-paperqa-pipeline.py` - PaperQA2 Fake Agent deterministic pipeline. Same SM, pipeline as predetermined code.
+- `07-moatless-mcts.py` - MCTS as interpreter code. Same SM, proved MCTS runs on universal machine. Superseded by 07b.
+- `08-dgm-evolutionary.py` - DGM evolutionary loop with agent-as-a-string. Same SM, proved evolution is just spawn.

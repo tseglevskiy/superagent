@@ -1,0 +1,15 @@
+---
+title: "Interpreter SM — Code Execution I/O Cycle"
+---
+stateDiagram-v2
+    [*] --> RUNNING
+
+    RUNNING --> WAITING_IO : IOYield<br/>→ SubmitIO
+    WAITING_IO --> RUNNING : IOResult<br/>→ RunAST
+    WAITING_IO --> RUNNING : IOError<br/>→ RunAST
+
+    RUNNING --> DONE : Finished
+    RUNNING --> ERROR : Failed
+
+    DONE --> [*]
+    ERROR --> [*]
